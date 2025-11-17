@@ -41,4 +41,14 @@ isort==5.13.2
 python-magic-bin
 
 django-storages[boto3]
+pytest
+pytest-django
+pytest-cov 
+pytest-xdist 
+factory-boy 
+faker 
+freezegun 
+pytest-mock 
+responses
+
 

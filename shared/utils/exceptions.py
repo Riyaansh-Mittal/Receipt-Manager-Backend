@@ -15,14 +15,23 @@ class BaseServiceException(APIException):
         self,
         detail: Optional[str] = None,
         code: Optional[str] = None,
-        status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
+        status_code: int = None,
         context: Optional[Dict[str, Any]] = None,
     ):
         resolved_code = code or getattr(self, "default_code", "error")
         resolved_detail = detail or getattr(self, "default_detail", "An error occurred")
+    
+        # CRITICAL: Only set status_code if explicitly provided
+        # Otherwise, use the class attribute (which subclasses define)
+        if status_code is not None:
+            self.status_code = status_code
+        elif not hasattr(self.__class__, 'status_code'):
+            # If no class attribute and no parameter, use 500
+            self.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        # else: use the class attribute that's already there
 
         super().__init__(detail=resolved_detail, code=resolved_code)
-        self.status_code = status_code
+        # Set other attributes
         self.code = resolved_code
         self.detail = resolved_detail
         self.context = context or {}

@@ -21,40 +21,81 @@ class ExchangeRateAPIClient:
     """
     
     def __init__(self):
-        self.api_key = getattr(settings, 'EXCHANGE_RATE_API_KEY')
+        # Store as private attributes, load lazily via properties
+        self._api_key = None
+        self._timeout = None
+        self._max_retries = None
+        self._circuit_breaker_config = None
+        self._circuit_breaker = None
+        
         self.base_url = 'https://v6.exchangerate-api.com/v6'
-        self.timeout = getattr(settings, 'EXCHANGE_RATE_API_TIMEOUT', 10)
-        self.max_retries = getattr(settings, 'EXCHANGE_RATE_MAX_RETRIES', 3)
         
         # Rate limiting
         self.last_request_time = None
         self.min_request_interval = 1.0  # 1 second between requests
         
-        self.session = self._create_session()
-        
-        # Initialize circuit breaker with proper CircuitBreakerConfig
-        self.circuit_breaker_config = CircuitBreakerConfig(
-            name='exchange_rate_api',
-            failure_threshold=getattr(settings, 'EXCHANGE_RATE_FAILURE_THRESHOLD', 3),
-            recovery_timeout=getattr(settings, 'EXCHANGE_RATE_RECOVERY_TIMEOUT', 300),  # 5 minutes
-            success_threshold=getattr(settings, 'EXCHANGE_RATE_SUCCESS_THRESHOLD', 2),
-            timeout=self.timeout,
-            expected_exceptions=(
-                requests.exceptions.RequestException,
-                requests.exceptions.Timeout,
-                requests.exceptions.ConnectionError,
-                requests.exceptions.HTTPError,
-                json.JSONDecodeError,
-                ValueError,
-                KeyError
+        # Session will be created on first use
+        self._session = None
+    
+    @property
+    def api_key(self):
+        """Lazy load API key from settings"""
+        if self._api_key is None:
+            self._api_key = getattr(settings, 'EXCHANGE_RATE_API_KEY', None)
+        return self._api_key
+    
+    @property
+    def timeout(self):
+        """Lazy load timeout from settings"""
+        if self._timeout is None:
+            self._timeout = getattr(settings, 'EXCHANGE_RATE_API_TIMEOUT', 10)
+        return self._timeout
+    
+    @property
+    def max_retries(self):
+        """Lazy load max retries from settings"""
+        if self._max_retries is None:
+            self._max_retries = getattr(settings, 'EXCHANGE_RATE_MAX_RETRIES', 3)
+        return self._max_retries
+    
+    @property
+    def session(self):
+        """Lazy create session on first access"""
+        if self._session is None:
+            self._session = self._create_session()
+        return self._session
+    
+    @property
+    def circuit_breaker_config(self):
+        """Lazy load circuit breaker config from settings"""
+        if self._circuit_breaker_config is None:
+            self._circuit_breaker_config = CircuitBreakerConfig(
+                name='exchange_rate_api',
+                failure_threshold=getattr(settings, 'EXCHANGE_RATE_FAILURE_THRESHOLD', 3),
+                recovery_timeout=getattr(settings, 'EXCHANGE_RATE_RECOVERY_TIMEOUT', 300),  # 5 minutes
+                success_threshold=getattr(settings, 'EXCHANGE_RATE_SUCCESS_THRESHOLD', 2),
+                timeout=self.timeout,
+                expected_exceptions=(
+                    requests.exceptions.RequestException,
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.HTTPError,
+                    json.JSONDecodeError,
+                    ValueError,
+                    KeyError
+                )
             )
-        )
-        
-        # Get circuit breaker from manager
-        self.circuit_breaker = circuit_breaker_manager.get_breaker(
-            'exchange_rate_api', 
-            self.circuit_breaker_config
-        )
+        return self._circuit_breaker_config
+    
+    @property
+    def circuit_breaker(self):
+        """Lazy get circuit breaker from manager"""
+        if self._circuit_breaker is None:
+            self._circuit_breaker = circuit_breaker_manager.get_breaker(
+                'exchange_rate_api', 
+                self.circuit_breaker_config
+            )
+        return self._circuit_breaker
     
     def _create_session(self) -> requests.Session:
         """Create HTTP session with retry strategy and timeouts"""
@@ -99,7 +140,6 @@ class ExchangeRateAPIClient:
         logger.info(f"Fetching exchange rates from: {url}")
         
         try:
-            # ← FIX: Use timeout directly, not request_options
             response = self.session.get(url, timeout=self.timeout)
             response.raise_for_status()
             
@@ -212,7 +252,6 @@ class ExchangeRateAPIClient:
         except Exception as e:
             logger.error(f"Error resetting circuit breaker: {str(e)}")
 
-
 class CurrencyManager:
     """
     Enhanced currency manager with external API integration and fallback mechanisms
@@ -248,17 +287,42 @@ class CurrencyManager:
         'ZAR': {'name': 'South African Rand', 'symbol': 'R', 'decimal_places': 2},
     }
     
-    # Configuration
-    DEFAULT_CURRENCY = getattr(settings, 'DEFAULT_CURRENCY', 'USD')
-    BASE_CURRENCY = getattr(settings, 'BASE_CURRENCY', 'USD')
-    
-    # Cache settings
-    EXCHANGE_RATE_CACHE_TIMEOUT = getattr(settings, 'EXCHANGE_RATE_CACHE_TIMEOUT', 3600)  # 1 hour
-    FALLBACK_CACHE_TIMEOUT = getattr(settings, 'FALLBACK_CACHE_TIMEOUT', 86400)
-    
     def __init__(self):
         self.api_client = ExchangeRateAPIClient()
         self._initialize_fallback_rates()
+        # Lazy load settings
+        self._default_currency = None
+        self._base_currency = None
+        self._exchange_rate_cache_timeout = None
+        self._fallback_cache_timeout = None
+
+    @property
+    def DEFAULT_CURRENCY(self):
+        """Lazy load DEFAULT_CURRENCY from settings"""
+        if self._default_currency is None:
+            self._default_currency = getattr(settings, 'DEFAULT_CURRENCY', 'USD')
+        return self._default_currency
+    
+    @property
+    def BASE_CURRENCY(self):
+        """Lazy load BASE_CURRENCY from settings"""
+        if self._base_currency is None:
+            self._base_currency = getattr(settings, 'BASE_CURRENCY', 'USD')
+        return self._base_currency
+    
+    @property
+    def EXCHANGE_RATE_CACHE_TIMEOUT(self):
+        """Lazy load EXCHANGE_RATE_CACHE_TIMEOUT from settings"""
+        if self._exchange_rate_cache_timeout is None:
+            self._exchange_rate_cache_timeout = getattr(settings, 'EXCHANGE_RATE_CACHE_TIMEOUT', 3600)
+        return self._exchange_rate_cache_timeout
+    
+    @property
+    def FALLBACK_CACHE_TIMEOUT(self):
+        """Lazy load FALLBACK_CACHE_TIMEOUT from settings"""
+        if self._fallback_cache_timeout is None:
+            self._fallback_cache_timeout = getattr(settings, 'FALLBACK_CACHE_TIMEOUT', 86400)
+        return self._fallback_cache_timeout
     
     def _initialize_fallback_rates(self):
         """Initialize fallback exchange rates for offline scenarios"""
