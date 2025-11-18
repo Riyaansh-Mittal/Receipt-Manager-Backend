@@ -107,15 +107,6 @@ class SecurityMiddleware(MiddlewareMixin):
     def _check_user_authorization(self, request):
         """Check user authorization for protected resources"""
         if hasattr(request, 'user') and request.user.is_authenticated:
-            # Check if user account is locked
-            if hasattr(request.user, 'is_account_locked') and request.user.is_account_locked():
-                return JsonResponse({
-                    'error': {
-                        'code': 'account_locked',
-                        'message': 'Account is temporarily locked',
-                        'status_code': 403
-                    }
-                }, status=403)
             
             # Check if user is deactivated
             if not request.user.is_active:

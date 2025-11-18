@@ -29,9 +29,9 @@ INSTALLED_APPS = [
     'rest_framework',
     # Your apps
     'shared',
-    'auth_service',
-    'receipt_service',
-    'ai_service',
+    'auth_service.apps.AuthServiceConfig',
+    'receipt_service.apps.ReceiptServiceConfig',
+    'ai_service.apps.AiServiceConfig'
 ]
 
 # Middleware (minimal for tests)

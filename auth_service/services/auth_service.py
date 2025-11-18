@@ -17,7 +17,7 @@ from shared.utils.exceptions import (
     MagicLinkExpiredException,
     MagicLinkAlreadyUsedException,
     InvalidTokenException,
-    AccountLockedException,
+    AuthenticationException,
     
     # User management exceptions
     UserNotFoundException,
@@ -56,7 +56,6 @@ class AuthService:
     def __init__(self):
         try:
             self.magic_link_expiry = getattr(settings, 'MAGIC_LINK_EXPIRY_MINUTES', 60)
-            self.max_failed_attempts = getattr(settings, 'MAX_FAILED_LOGIN_ATTEMPTS', 5)
             self.account_lock_minutes = getattr(settings, 'ACCOUNT_LOCK_MINUTES', 30)
             self.max_update_email_attempts_per_day = getattr(settings, 'MAX_UPDATE_EMAIL_ATTEMPTS_PER_DAY', 3)
         except Exception as e:
@@ -225,25 +224,15 @@ class AuthService:
                 )
                 
                 # Check if account is locked
-                if user.is_account_locked():
-                    raise AccountLockedException(
-                        "Account is temporarily locked",
-                        context={
-                            'locked_until': user.account_locked_until.isoformat() 
-                            if user.account_locked_until else None
-                        }
+                if not user.is_active:
+                    raise AuthenticationException(
+                        "Account is deactivated",
+                        context={'user_id': str(user.id)}
                     )
                 
                 # ✅ IMPORTANT: Don't update user.email here
                 # User might have a pending email change
                 # Only update authentication-related fields
-                with transaction.atomic():
-                    User.objects.filter(pk=user.pk).update(
-                        last_login_ip=request_ip,
-                        failed_login_attempts=0,
-                        account_locked_until=None
-                    )
-                    user.refresh_from_db()
                 
                 logger.info(
                     f"Existing user authenticated: {user.email} "
@@ -258,7 +247,6 @@ class AuthService:
                             email=magic_link_email,
                             username=magic_link_email,
                             is_email_verified=True,  # Magic link verifies email
-                            last_login_ip=request_ip
                         )
                         is_new_user = True
                         
@@ -275,15 +263,6 @@ class AuthService:
                             Q(username__iexact=magic_link_email)
                         )
                         
-                        # Update the concurrently created user
-                        with transaction.atomic():
-                            User.objects.filter(pk=user.pk).update(
-                                last_login_ip=request_ip,
-                                failed_login_attempts=0,
-                                account_locked_until=None
-                            )
-                            user.refresh_from_db()
-                        
                         is_new_user = False
                         logger.info(
                             f"User retrieved after concurrent creation: {user.email}"
@@ -297,7 +276,7 @@ class AuthService:
                             "User creation failed due to database inconsistency"
                         )
             
-        except (AccountLockedException, DatabaseOperationException):
+        except (AuthenticationException, DatabaseOperationException):
             raise
         except Exception as e:
             logger.error(f"User lookup/creation failed: {str(e)}", exc_info=True)

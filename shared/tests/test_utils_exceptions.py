@@ -17,7 +17,6 @@ from shared.utils.exceptions import (
     MagicLinkAlreadyUsedException,
     MagicLinkExpiredException,
     InvalidMagicLinkException,
-    AccountLockedException,
     UserNotFoundException,
     EmailAlreadyExistsException,
     EmailNotVerifiedException,
@@ -156,11 +155,6 @@ class TestAuthenticationExceptions:
         exc = InvalidMagicLinkException()
         assert exc.status_code == status.HTTP_400_BAD_REQUEST
         assert exc.code == "invalid_magic_link"
-
-    def test_account_locked_exception(self):
-        exc = AccountLockedException()
-        assert exc.code == "account_locked"
-        assert "locked" in exc.detail.lower()
 
 
 @pytest.mark.unit

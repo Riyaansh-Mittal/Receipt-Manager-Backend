@@ -1,45 +1,44 @@
 import uuid
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, PermissionsMixin
 from django.db import models
 from django.utils import timezone
-from datetime import timedelta
+from .managers import CustomUserManager
+from django.utils.translation import gettext_lazy as _
 
-class User(AbstractUser):
+class User(AbstractUser, PermissionsMixin):
     """Extended User model for receipt management"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True, db_index=True)
     first_name = models.CharField(max_length=150, blank=True)
+    username = models.CharField(max_length=150, unique=True)
     last_name = models.CharField(max_length=150, blank=True)
+    is_staff = models.BooleanField(
+        _('staff status'),
+        default=False,
+        help_text=_('Designates whether the user can log into this admin site.')
+    )
     is_email_verified = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
     monthly_upload_count = models.PositiveIntegerField(default=0)
     upload_reset_date = models.DateField(auto_now_add=True)
-    last_login_ip = models.GenericIPAddressField(null=True, blank=True)
-    failed_login_attempts = models.PositiveIntegerField(default=0)
-    account_locked_until = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Custom manager
+    objects = CustomUserManager()
     
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
     
     class Meta:
         db_table = 'auth_users'
+        verbose_name = _('user')
+        verbose_name_plural = _('users')
         indexes = [
             models.Index(fields=['email']),
             models.Index(fields=['created_at']),
             models.Index(fields=['is_email_verified']),
         ]
-    
-    def is_account_locked(self) -> bool:
-        """Check if account is currently locked"""
-        if self.account_locked_until:
-            return timezone.now() < self.account_locked_until
-        return False
-    
-    def lock_account(self, minutes: int = 30):
-        """Lock account for specified minutes"""
-        self.account_locked_until = timezone.now() + timedelta(minutes=minutes)
-        self.save(update_fields=['account_locked_until'])
 
 class MagicLink(models.Model):
     """Magic link tokens for passwordless authentication"""

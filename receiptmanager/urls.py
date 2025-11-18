@@ -21,7 +21,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path('secure-admin-123abc/', admin.site.urls),
     path('auth/', include('auth_service.api.urls')),
     path('receipt/', include('receipt_service.api.urls')),
     # path('api/v1/receipts/', include('apps.receipts.api.v1.urls')),  # Future

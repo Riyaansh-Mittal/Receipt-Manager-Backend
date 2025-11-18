@@ -23,7 +23,6 @@ from shared.utils.exceptions import (
     AuthorizationException,  # Now we'll use this
     InvalidTokenException,
     TokenExpiredException,
-    AccountLockedException,
     
     # User management exceptions
     UserNotFoundException,
@@ -214,7 +213,7 @@ class MagicLinkLoginView(APIView):
             
         except (ValidationException, InvalidMagicLinkException,
                 MagicLinkExpiredException, MagicLinkAlreadyUsedException,
-                InvalidTokenException, AccountLockedException,
+                InvalidTokenException,
                 SecurityViolationException, DatabaseOperationException,
                 TokenGenerationException, RateLimitExceededException,
                 TokenExpiredException, TokenBlacklistedException):
@@ -545,8 +544,7 @@ class UserStatsView(APIView):
                         'remaining_uploads': max(0, 50 - user.monthly_upload_count),
                         'account_age_days': (timezone.now() - user.created_at).days,
                         'email_verified': user.is_email_verified,
-                        'account_status': 'active' if not user.is_account_locked() else 'locked',
-                        'last_login': user.last_login.isoformat() if user.last_login else None
+                        'account_status': 'active' if not user.is_active else 'inactive',
                     }
                     
                     # Cache stats for 5 minutes
@@ -639,14 +637,6 @@ class LogoutView(APIView):
                 except Exception as e:
                     logger.warning(f"Failed to blacklist access token: {str(e)}")
                     blacklist_errors.append(f'access token error: {str(e)}')
-            
-            # Update user login info
-            try:
-                request.user.failed_login_attempts = 0
-                request.user.last_login = timezone.now()
-                request.user.save(update_fields=['failed_login_attempts', 'last_login'])
-            except Exception as e:
-                logger.warning(f"Failed to update user logout info: {str(e)}")
             
             # Log logout attempt
             self._log_logout_attempt(request.user, client_ip, success=True)

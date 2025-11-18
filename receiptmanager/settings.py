@@ -31,6 +31,7 @@ DEBUG = True
 
 # ALLOWED_HOSTS = ['*'] 
 ALLOWED_HOSTS = [
+    'localhost', '127.0.0.1', '[::1]',
     'localhost:3000',
     '127.0.0.1:3000',
     '0869a9744804.ngrok-free.app',  # Your ngrok domain
@@ -528,6 +529,8 @@ DATABASES = {
 }
 
 EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
+EMAIL_FILE_PATH = os.path.join(BASE_DIR, 'sent_emails')
+
 DEFAULT_FROM_EMAIL = 'Receipt Manager <noreply@receiptmanager.com>'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
@@ -555,7 +558,6 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # Security Settings
-MAX_FAILED_LOGIN_ATTEMPTS = 5
 ACCOUNT_LOCK_MINUTES = 30
 MAGIC_LINK_EXPIRY_MINUTES = 60
 MAX_UPDATE_EMAIL_ATTEMPTS_PER_DAY=10

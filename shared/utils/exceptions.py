@@ -87,10 +87,6 @@ class InvalidMagicLinkException(AuthenticationException):
     default_detail = 'Invalid magic link. Please request a new one.'
     status_code = status.HTTP_400_BAD_REQUEST  # 400, not 401
 
-class AccountLockedException(AuthenticationException):
-    default_code = 'account_locked'
-    default_detail = 'Account is temporarily locked due to security reasons'
-
 # ========================
 # User Management Exceptions
 # ========================

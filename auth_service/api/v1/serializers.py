@@ -58,8 +58,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
         """Get account status"""
         if not obj.is_active:
             return 'inactive'
-        elif hasattr(obj, 'is_account_locked') and obj.is_account_locked():
-            return 'locked'
         return 'active'
     
     def validate_first_name(self, value):
@@ -184,41 +182,3 @@ class RefreshTokenSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("Refresh token is required")
         return value.strip()
-
-class UserRegistrationSerializer(serializers.Serializer):
-    """Serializer for user registration (optional password-based)"""
-    email = serializers.EmailField()
-    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
-    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
-    password = serializers.CharField(write_only=True, required=False)
-    
-    def validate_email(self, value):
-        """Validate email uniqueness"""
-        User = model_service.user_model
-        
-        if User.objects.filter(email=value).exists():
-            raise serializers.ValidationError("Email address already registered")
-        
-        return value.lower().strip()
-    
-    def validate_password(self, value):
-        """Validate password strength"""
-        if value:
-            try:
-                validate_password(value)
-            except Exception as e:
-                raise serializers.ValidationError(str(e))
-        return value
-    
-    def create(self, validated_data):
-        """Create new user"""
-        User = model_service.user_model
-        
-        password = validated_data.pop('password', None)
-        user = User.objects.create_user(**validated_data)
-        
-        if password:
-            user.set_password(password)
-            user.save()
-        
-        return user

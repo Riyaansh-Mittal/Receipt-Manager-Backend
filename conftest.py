@@ -5,10 +5,13 @@ import os
 import sys
 import pytest
 
+
 # ========== DJANGO CONFIGURATION - RUNS BEFORE EVERYTHING ==========
+
 
 # Get project root directory (where conftest.py lives)
 project_root = os.getcwd()
+
 
 # Clean up sys.path to avoid duplicates
 project_root_normalized = os.path.normpath(project_root)
@@ -16,17 +19,23 @@ sys.path = [os.path.normpath(p) for p in sys.path]  # Normalize all paths
 if project_root_normalized not in sys.path:
     sys.path.insert(0, project_root_normalized)
 
+
 # Set Django settings module
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'receiptmanager.settings')
+
 
 # Configure Django if not already configured
 import django
 from django.conf import settings
 
+
 if not settings.configured:
     settings.configure(
         DEBUG=True,
         SECRET_KEY='test-secret-key-for-testing-only-never-use-in-production',
+        
+        # ✅ ADD THIS - Critical for custom User model
+        AUTH_USER_MODEL='auth_service.User',
         
         # Database
         DATABASES={
@@ -41,6 +50,10 @@ if not settings.configured:
             'django.contrib.contenttypes',
             'django.contrib.auth',
             'rest_framework',
+            'shared',
+            'auth_service.apps.AuthServiceConfig',
+            'receipt_service.apps.ReceiptServiceConfig',
+            'ai_service.apps.AiServiceConfig'
         ],
         
         # Middleware
@@ -88,6 +101,18 @@ if not settings.configured:
         PASSWORD_HASHERS=[
             'django.contrib.auth.hashers.MD5PasswordHasher',
         ],
+        
+        # ✅ ADD THESE - Email settings for auth tests
+        DEFAULT_FROM_EMAIL='noreply@test.com',
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        FRONTEND_URL='http://localhost:3000',
+        
+        # ✅ ADD THESE - JWT settings for auth tests
+        SIMPLE_JWT={
+            'ACCESS_TOKEN_LIFETIME': 60,  # minutes
+            'REFRESH_TOKEN_LIFETIME': 10080,  # minutes (7 days)
+            'ALGORITHM': 'HS256',
+        },
     )
     
     # Setup Django
