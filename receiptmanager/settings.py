@@ -74,6 +74,7 @@ CELERY_TASK_SERIALIZER = 'json'
 
 # Store Celery task results
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'django-db')
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
 CELERY_TASK_ACKS_LATE = True  # Ensure tasks are not lost if worker crashes
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
@@ -102,239 +103,169 @@ CACHES = {
 
 # Celery Beat Schedule for cleanup tasks
 # Celery Beat Schedule for all periodic tasks
+# ===========================
+# Celery Beat Schedule - MVP Optimized
+# ===========================
 CELERY_BEAT_SCHEDULE = {
     # ===========================
-    # Auth Service Tasks
+    # Auth Service Tasks (KEEP - Critical)
     # ===========================
     'cleanup-expired-magic-links': {
         'task': 'auth_service.tasks.cleanup_expired_magic_links',
-        'schedule': crontab(minute=0, hour=2),  # Daily at 2:00 AM
+        'schedule': crontab(minute=0, hour=2),
     },
     'cleanup-expired-email-verifications': {
         'task': 'auth_service.tasks.cleanup_expired_email_verifications',
-        'schedule': crontab(minute=30, hour=2),  # Daily at 2:30 AM
+        'schedule': crontab(minute=30, hour=2),
     },
     'cleanup-expired-tokens': {
         'task': 'auth_service.tasks.cleanup_expired_token_blacklist',
-        'schedule': crontab(minute=0, hour='*/6'),  # Every 6 hours
+        'schedule': crontab(minute=0, hour='*/6'),
     },
     'security-audit-tokens': {
         'task': 'auth_service.tasks.security_audit_tokens',
-        'schedule': crontab(minute=0, hour=2),  # 2 AM daily
+        'schedule': crontab(minute=0, hour=4),
     },
     'invalidate-stale-tokens': {
         'task': 'auth_service.tasks.invalidate_stale_tokens',
-        'schedule': crontab(minute=0, hour='*/12'),  # Every 12 hours
-    },
-    'cleanup-expired-magic-links': {
-        'task': 'auth_service.tasks.cleanup_expired_magic_links',
-        'schedule': crontab(minute=0, hour=3),  # 3 AM daily
+        'schedule': crontab(minute=0, hour='*/12'),
     },
     
     # ===========================
-    # AI Service Tasks
+    # AI Service Tasks (KEEP - Critical)
     # ===========================
     'cleanup-expired-ai-jobs': {
         'task': 'ai_service.tasks.ai_tasks.cleanup_expired_processing_jobs',
-        'schedule': crontab(hour=2, minute=0),  # Daily at 2:00 AM
+        'schedule': crontab(hour=3, minute=0),
     },
     'ai-services-health-check': {
         'task': 'ai_service.tasks.ai_tasks.health_check_ai_services',
-        'schedule': crontab(minute='*/5'),  # Every 5 minutes
+        'schedule': crontab(minute='*/5'),
     },
     
     # ===========================
-    # Receipt Service - Cleanup Tasks
+    # Receipt Service - Cleanup Tasks (KEEP - Lightweight)
     # ===========================
-    'cleanup-old-receipts': {
-        'task': 'receipt_service.tasks.cleanup_tasks.cleanup_old_receipts',
-        'schedule': crontab(minute=0, hour=5, day_of_week=0),  # Weekly on Sunday at 5:00 AM
-        'kwargs': {'days_old': 730},  # 2 years old
-    },
     'update-category-usage-stats': {
         'task': 'receipt_service.tasks.cleanup_tasks.update_category_usage_stats',
-        'schedule': crontab(minute=0, hour='*/12'),  # Every 12 hours
+        'schedule': crontab(minute=0, hour='*/12'),
     },
     'cleanup-expired-cache-entries': {
         'task': 'receipt_service.tasks.cleanup_tasks.cleanup_expired_cache_entries',
-        'schedule': crontab(minute=0, hour=1),  # Daily at 1:00 AM
+        'schedule': crontab(minute=0, hour=1),
     },
     'generate-daily-stats-report': {
         'task': 'receipt_service.tasks.cleanup_tasks.generate_daily_stats_report',
-        'schedule': crontab(minute=30, hour=0),  # Daily at 12:30 AM
+        'schedule': crontab(minute=30, hour=0),
     },
     
     # ===========================
-    # Receipt Service - File Tasks
+    # Receipt Service - File Tasks (KEEP - Essential)
     # ===========================
-    'cleanup-old-temp-files': {
-        'task': 'receipt_service.tasks.file_tasks.cleanup_old_temp_files',
-        'schedule': crontab(minute=0, hour='*/6'),  # Every 6 hours
-    },
-    'cleanup-orphaned-files': {
-        'task': 'receipt_service.tasks.file_tasks.cleanup_orphaned_files',
-        'schedule': crontab(minute=0, hour=4),  # Daily at 4:00 AM
-    },
-    'cleanup-failed-receipts': {
-        'task': 'receipt_service.tasks.file_tasks.cleanup_failed_receipts',
-        'schedule': crontab(minute=30, hour=3),  # Daily at 3:30 AM
-        'kwargs': {'days_old': 7},  # 7 days old
-    },
+    # 'cleanup-old-temp-files': {
+    #     'task': 'receipt_service.tasks.file_tasks.cleanup_old_temp_files',
+    #     'schedule': crontab(minute=0, hour=3),  # Daily at 3 AM
+    # },
     'update-storage-statistics': {
         'task': 'receipt_service.tasks.file_tasks.update_storage_statistics',
         'schedule': crontab(minute='*/30'),  # Every 30 minutes
     },
-    'daily-file-maintenance': {
-        'task': 'receipt_service.tasks.file_tasks.daily_maintenance_task',
-        'schedule': crontab(minute=0, hour=5),  # Daily at 5:00 AM
-    },
-    'check-storage-health': {
-        'task': 'receipt_service.tasks.file_tasks.check_storage_health',
-        'schedule': crontab(minute='*/15'),  # Every 15 minutes
-    },
-    'check-duplicate-receipts': {
-        'task': 'receipt_service.tasks.file_tasks.check_duplicate_receipts',
-        'schedule': crontab(minute=0, hour=6, day_of_week=1),  # Weekly on Monday at 6:00 AM
-    },
+    
     # ===========================
-    # Receipt Service - Export Tasks
+    # DISABLED FOR MVP - Uncomment when needed
     # ===========================
-    'cleanup-expired-export-files': {
-        'task': 'receipt_service.tasks.export_tasks.cleanup_expired_export_files',
-        'schedule': crontab(minute=0, hour='*/6'),  # Every 6 hours
-    },
-    'cleanup-stale-export-tasks': {
-        'task': 'receipt_service.tasks.export_tasks.cleanup_stale_export_tasks',
-        'schedule': crontab(minute=30, hour=3),  # Daily at 3:30 AM
-    },
+    
+    # Heavy cleanup (wait for 1000+ receipts)
+    # 'cleanup-orphaned-files': {
+    #     'task': 'receipt_service.tasks.file_tasks.cleanup_orphaned_files',
+    #     'schedule': crontab(minute=0, hour=4),
+    # },
+    # 'cleanup-failed-receipts': {
+    #     'task': 'receipt_service.tasks.file_tasks.cleanup_failed_receipts',
+    #     'schedule': crontab(minute=30, hour=3),
+    #     'kwargs': {'days_old': 7},
+    # },
+    # 'check-duplicate-receipts': {
+    #     'task': 'receipt_service.tasks.file_tasks.check_duplicate_receipts',
+    #     'schedule': crontab(minute=0, hour=6, day_of_week=1),
+    # },
+    
+    # Old receipts cleanup (GDPR - wait for 30+ days data)
+    # 'cleanup-old-receipts': {
+    #     'task': 'receipt_service.tasks.cleanup_tasks.cleanup_old_receipts',
+    #     'schedule': crontab(minute=0, hour=5, day_of_week=0),
+    #     'kwargs': {'days_old': 730},
+    # },
+    
+    # Export cleanup (frontend not integrated yet)
+    # 'cleanup-expired-export-files': {
+    #     'task': 'receipt_service.tasks.export_tasks.cleanup_expired_export_files',
+    #     'schedule': crontab(minute=0, hour='*/6'),
+    # },
+    # 'cleanup-stale-export-tasks': {
+    #     'task': 'receipt_service.tasks.export_tasks.cleanup_stale_export_tasks',
+    #     'schedule': crontab(minute=30, hour=3),
+    # },
+    
+    # Monitoring (overkill for MVP)
+    # 'check-storage-health': {
+    #     'task': 'receipt_service.tasks.file_tasks.check_storage_health',
+    #     'schedule': crontab(minute='*/15'),
+    # },
+    
+    # Wrapper task (redundant - use direct scheduling)
+    # 'daily-maintenance-task': {
+    #     'task': 'receipt_service.tasks.file_tasks.daily_maintenance_task',
+    #     'schedule': crontab(minute=0, hour=5),
+    # },
 }
 
 
-# Celery Task Routing Configuration
+# ===========================
+# Celery Task Routes - MVP Optimized
+# ===========================
 CELERY_TASK_ROUTES = {
-    # ===========================
-    # Auth Service Tasks
-    # ===========================
-    'auth_service.tasks.send_magic_link_email_async': {
-        'queue': 'default'
-    },
-    'auth_service.tasks.send_verification_email_async': {
-        'queue': 'default'
-    },
-    'auth_service.tasks.send_welcome_email_async': {
-        'queue': 'default'
-    },
-    'auth_service.tasks.cleanup_expired_magic_links': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.auth',
-    },
-    'auth_service.tasks.cleanup_expired_email_verifications': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.auth',
-    },
-    'auth_service.tasks.cleanup_expired_token_blacklist': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.auth',
-    },
-    'auth_service.tasks.security_audit_tokens': {
-        'queue': 'monitoring',
-        'routing_key': 'monitoring.security',
-    },
-    'auth_service.tasks.invalidate_stale_tokens': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.auth', 
-    },
+    # Auth Service (KEEP ALL)
+    'auth_service.tasks.send_magic_link_email_async': {'queue': 'default'},
+    'auth_service.tasks.send_verification_email_async': {'queue': 'default'},
+    'auth_service.tasks.send_welcome_email_async': {'queue': 'default'},
+    'auth_service.tasks.cleanup_expired_magic_links': {'queue': 'maintenance'},
+    'auth_service.tasks.cleanup_expired_email_verifications': {'queue': 'maintenance'},
+    'auth_service.tasks.cleanup_expired_token_blacklist': {'queue': 'maintenance'},
+    'auth_service.tasks.security_audit_tokens': {'queue': 'monitoring'},
+    'auth_service.tasks.invalidate_stale_tokens': {'queue': 'maintenance'},
     
-    # ===========================
-    # AI Service Task Routing
-    # ===========================
-    'ai_service.tasks.ai_tasks.process_receipt_ai_task': {
-        'queue': 'ai_processing',
-        'routing_key': 'ai.processing',
-    },
-    'ai_service.tasks.ai_tasks.batch_process_receipts_task': {
-        'queue': 'ai_batch',
-        'routing_key': 'ai.batch',
-    },
-    'ai_service.tasks.ai_tasks.cleanup_expired_processing_jobs': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.cleanup',
-    },
-    'ai_service.tasks.ai_tasks.health_check_ai_services': {
-        'queue': 'monitoring',
-        'routing_key': 'monitoring.health',
-    },
+    # AI Service (KEEP ALL)
+    'ai_service.tasks.ai_tasks.process_receipt_ai_task': {'queue': 'ai_processing'},
+    'ai_service.tasks.ai_tasks.batch_process_receipts_task': {'queue': 'ai_batch'},
+    'ai_service.tasks.ai_tasks.cleanup_expired_processing_jobs': {'queue': 'maintenance'},
+    'ai_service.tasks.ai_tasks.health_check_ai_services': {'queue': 'monitoring'},
     
-    # ===========================
-    # Receipt Service - Cleanup Task Routing
-    # ===========================
-    'receipt_service.tasks.cleanup_tasks.cleanup_old_receipts': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.cleanup',
-    },
-    'receipt_service.tasks.cleanup_tasks.update_category_usage_stats': {
-        'queue': 'cache',
-        'routing_key': 'cache.update',
-    },
-    'receipt_service.tasks.cleanup_tasks.cleanup_expired_cache_entries': {
-        'queue': 'cache',
-        'routing_key': 'cache.cleanup',
-    },
-    'receipt_service.tasks.cleanup_tasks.generate_daily_stats_report': {
-        'queue': 'monitoring',
-        'routing_key': 'monitoring.stats',
-    },
+    # Receipt Service - Cleanup (KEEP ENABLED TASKS)
+    'receipt_service.tasks.cleanup_tasks.update_category_usage_stats': {'queue': 'cache'},
+    'receipt_service.tasks.cleanup_tasks.cleanup_expired_cache_entries': {'queue': 'cache'},
+    'receipt_service.tasks.cleanup_tasks.generate_daily_stats_report': {'queue': 'monitoring'},
     
-    # ===========================
-    # Receipt Service - File Task Routing
-    # ===========================
-    'receipt_service.tasks.file_tasks.cleanup_old_temp_files': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.cleanup',
-    },
-    'receipt_service.tasks.file_tasks.cleanup_orphaned_files': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.cleanup',
-    },
-    'receipt_service.tasks.file_tasks.cleanup_failed_receipts': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.cleanup',
-    },
-    'receipt_service.tasks.file_tasks.update_storage_statistics': {
-        'queue': 'cache',
-        'routing_key': 'cache.update',
-    },
-    'receipt_service.tasks.file_tasks.export_ledger_async_task': {
-        'queue': 'export',
-        'routing_key': 'export.ledger',
-    },
-    'receipt_service.tasks.file_tasks.daily_maintenance_task': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.file',
-    },
-    'receipt_service.tasks.file_tasks.check_storage_health': {
-        'queue': 'monitoring',
-        'routing_key': 'monitoring.health',
-    },
-    'receipt_service.tasks.file_tasks.check_duplicate_receipts': {
-        'queue': 'monitoring',
-        'routing_key': 'monitoring.integrity',
-    },
+    # Receipt Service - File (KEEP ENABLED TASKS)
+    # 'receipt_service.tasks.file_tasks.cleanup_old_temp_files': {'queue': 'maintenance'},
+    'receipt_service.tasks.file_tasks.update_storage_statistics': {'queue': 'cache'},
     
-    # ===========================
-    # Receipt Service - Export Task Routing
-    # ===========================
-    'receipt_service.tasks.export_tasks.cleanup_expired_export_files': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.export',
-    },
-    'receipt_service.tasks.export_tasks.cleanup_stale_export_tasks': {
-        'queue': 'maintenance',
-        'routing_key': 'maintenance.export',
-    },
+    # DISABLED ROUTES (uncomment when enabling tasks)
+    # 'receipt_service.tasks.cleanup_tasks.cleanup_old_receipts': {'queue': 'maintenance'},
+    # 'receipt_service.tasks.file_tasks.cleanup_orphaned_files': {'queue': 'maintenance'},
+    # 'receipt_service.tasks.file_tasks.cleanup_failed_receipts': {'queue': 'maintenance'},
+    # 'receipt_service.tasks.file_tasks.check_duplicate_receipts': {'queue': 'monitoring'},
+    # 'receipt_service.tasks.file_tasks.check_storage_health': {'queue': 'monitoring'},
+    # 'receipt_service.tasks.file_tasks.daily_maintenance_task': {'queue': 'maintenance'},
+    # 'receipt_service.tasks.export_tasks.cleanup_expired_export_files': {'queue': 'maintenance'},
+    # 'receipt_service.tasks.export_tasks.cleanup_stale_export_tasks': {'queue': 'maintenance'},
+    # 'receipt_service.tasks.export_tasks.export_ledger_async_task': {'queue': 'export'},
 }
 
-# Celery Queue Configuration
+
+# ===========================
+# Celery Queue Configuration (KEEP ALL)
+# ===========================
 CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_QUEUES = {
     'default': {
@@ -349,14 +280,6 @@ CELERY_TASK_QUEUES = {
         'exchange': 'ai',
         'routing_key': 'ai.batch',
     },
-    'file_processing': {
-        'exchange': 'file',
-        'routing_key': 'file.*',
-    },
-    'export': {
-        'exchange': 'export',
-        'routing_key': 'export.*',
-    },
     'maintenance': {
         'exchange': 'maintenance',
         'routing_key': 'maintenance.*',
@@ -368,6 +291,10 @@ CELERY_TASK_QUEUES = {
     'monitoring': {
         'exchange': 'monitoring',
         'routing_key': 'monitoring.*',
+    },
+    'export': {
+        'exchange': 'export',
+        'routing_key': 'export.*',
     },
 }
 

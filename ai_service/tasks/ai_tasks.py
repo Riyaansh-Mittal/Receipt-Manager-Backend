@@ -168,40 +168,62 @@ def cleanup_expired_processing_jobs() -> Dict[str, any]:
         return {'error': str(e)}
 
 
+# ai_service/tasks/ai_tasks.py
+
 @shared_task
 def health_check_ai_services() -> Dict[str, any]:
     """
     Periodic health check for AI services
     Scheduled task - runs every 5 minutes
+    Only checks enabled services based on configuration
     """
     try:
+        from django.conf import settings
+        
         health_status = {
             'timestamp': timezone.now().isoformat(),
-            'services': {}
+            'services': {},
+            'config': {
+                'gemini_only': getattr(settings, 'USE_GEMINI_ONLY_IMAGE_INPUT', False)
+            }
         }
         
-        # Check OCR service (PaddleOCR)
-        try:
-            from ..services.ocr_service import ocr_service
-            
-            # Check PaddleOCR engine availability and version info if possible
-            engine_info = ocr_service.get_engine_info()
-            status = 'healthy' if engine_info.get('available', False) else 'unhealthy'
-            
+        # ===========================
+        # Check OCR Service (if enabled)
+        # ===========================
+        use_gemini_only = getattr(settings, 'USE_GEMINI_ONLY_IMAGE_INPUT', False)
+        
+        if not use_gemini_only:
+            # OCR is active - check it
+            try:
+                from ..services.ocr_service import get_ocr_service
+                
+                ocr_service = get_ocr_service()
+                engine_info = ocr_service.get_engine_info()
+                status = 'healthy' if engine_info.get('available', False) else 'unhealthy'
+                
+                health_status['services']['ocr'] = {
+                    'status': status,
+                    'engine': engine_info.get('engine', 'unknown'),
+                }
+                
+            except Exception as e:
+                logger.error(f"OCR health check failed: {str(e)}")
+                health_status['services']['ocr'] = {
+                    'status': 'unhealthy',
+                    'error': str(e)
+                }
+        else:
+            # Gemini-only mode: skip OCR entirely
+            logger.debug("OCR health check skipped (Gemini-only mode enabled)")
             health_status['services']['ocr'] = {
-                'status': status,
-                'engine': engine_info.get('engine', 'unknown'),
-                # Optionally add PaddleOCR specific version info here if accessible
-            }
-
-        except Exception as e:
-            logger.error(f"OCR health check failed: {str(e)}")
-            health_status['services']['ocr'] = {
-                'status': 'unhealthy',
-                'error': str(e)
+                'status': 'disabled',
+                'reason': 'Gemini-only mode enabled'
             }
         
-        # Check Gemini service
+        # ===========================
+        # Check Gemini Service (Always)
+        # ===========================
         try:
             from ..services.gemini_extraction_service import gemini_extractor
             
@@ -223,7 +245,9 @@ def health_check_ai_services() -> Dict[str, any]:
                 'error': str(e)
             }
         
-        # Check database connectivity
+        # ===========================
+        # Check Database Connectivity
+        # ===========================
         try:
             from ..services.ai_model_service import model_service
             
@@ -239,11 +263,21 @@ def health_check_ai_services() -> Dict[str, any]:
                 'error': str(e)
             }
         
-        # Overall status
-        all_healthy = all(
-            service.get('status') == 'healthy' 
+        # ===========================
+        # Overall Status
+        # ===========================
+        # Check only healthy services (skip 'disabled' ones)
+        service_statuses = [
+            service.get('status') 
             for service in health_status['services'].values()
+            if service.get('status') != 'disabled'
+        ]
+        
+        all_healthy = all(
+            status == 'healthy' 
+            for status in service_statuses
         )
+        
         health_status['overall_status'] = 'healthy' if all_healthy else 'degraded'
         
         if not all_healthy:
