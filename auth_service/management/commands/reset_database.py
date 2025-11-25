@@ -6,6 +6,7 @@ from django.conf import settings
 from django.db import connections
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+import os
 
 
 class Command(BaseCommand):
@@ -25,6 +26,14 @@ class Command(BaseCommand):
     
     def handle(self, *args, **options):
         """Drop and recreate PostgreSQL database using Python"""
+
+        # Safety check: prevent running in production
+        environment = os.getenv('DJANGO_ENVIRONMENT', 'development').lower()
+        if environment == 'production':
+            self.stdout.write(self.style.ERROR(
+                "\n❌ Aborted: This command is disabled in production environment.\n"
+            ))
+            return
         
         # Get database settings
         db_settings = settings.DATABASES['default']

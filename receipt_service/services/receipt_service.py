@@ -889,7 +889,8 @@ from ..utils.exceptions import (
     InvalidFileFormatException,
     FileSizeExceededException,
     DuplicateReceiptException,
-    FileStorageException
+    FileStorageException,
+    LedgerEntryCreationException
 )
 from shared.utils.exceptions import ValidationException
 
@@ -907,6 +908,27 @@ class ReceiptService:
         self.quota_service = QuotaService()
         self.category_service = CategoryService()
     
+    def get_receipt_status(self, receipt_id: str) -> str:
+        """
+        Get the current status of a receipt by id.
+        
+        Args:
+            receipt_id: Receipt identifier (UUID string)
+        
+        Returns:
+            Current status string of the receipt
+            Returns None if receipt not found
+        """
+        try:
+            receipt = model_service.receipt_model.objects.only('status').get(id=receipt_id)
+            return receipt.status
+        except model_service.receipt_model.DoesNotExist:
+            logger.warning(f"Receipt {receipt_id} not found when fetching status")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching receipt status for {receipt_id}: {str(e)}", exc_info=True)
+            return None
+        
     def upload_receipt(
         self, 
         user, 
@@ -927,10 +949,6 @@ class ReceiptService:
                 result = self.file_service.store_receipt_file(user, uploaded_file, metadata)
                 receipt_id = result['receipt_id']
                 is_retry = result.get('is_retry', False)
-                
-                # Only increment quota if NOT a retry
-                if not is_retry:
-                    self.quota_service.increment_upload_count(user)
             
             # Queue AI processing (outside transaction)
             processing_queued = False
@@ -1079,7 +1097,7 @@ class ReceiptService:
                 'upload_date': receipt.created_at.isoformat(),
                 'processing_started_at': receipt.processing_started_at.isoformat() if receipt.processing_started_at else None,
                 'processing_completed_at': receipt.processing_completed_at.isoformat() if receipt.processing_completed_at else None,
-                'can_be_confirmed': receipt.can_be_confirmed(),
+                'can_be_confirmed': receipt.can_be_confirmed,
             }
             
             # Get AI results if processed
@@ -1103,68 +1121,96 @@ class ReceiptService:
             )
             
     
-    def _get_ai_processing_results(self, receipt_id: str, user_id: str) -> Dict[str, Any]:
+    def _get_ai_processing_results(self, receipt_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         """
         Get AI processing results from ai_service models
-        Single source of truth for extracted data!
         """
         try:
-            from ai_service.services.ai_model_service import model_service as ai_model_service
-            
-            # Get processing job
-            processing_job = ai_model_service.processing_job_model.objects.filter(
+            from ai_service.services.ai_model_service import model_service
+            logger.info(f"Looking for ProcessingJob: receipt_id={receipt_id}, user_id={user_id}")
+            # Get the most recent processing job
+            processing_job = model_service.processing_job_model.objects.filter(
                 receipt_id=receipt_id,
                 user_id=user_id
             ).order_by('-created_at').first()
             
             if not processing_job:
+                logger.warning(f"No ProcessingJob found for receipt {receipt_id}")
                 return None
             
-            result = {}
+            # ✅ Debug: Log job status
+            logger.info(f"Found job: id={processing_job.id}, status={processing_job.status}, stage={processing_job.current_stage}")
             
-            # Get OCR result
+            if processing_job.status != 'completed':
+                logger.warning(f"Job not completed: status={processing_job.status}")
+                return None
+            
+            duration_seconds = 0
+            if processing_job.started_at and processing_job.completed_at:
+                duration_seconds = (processing_job.completed_at - processing_job.started_at).total_seconds()
+
+            result: Dict[str, Any] = {
+                'processing_duration_seconds': round(duration_seconds, 2),
+                'processing_progress': 100,
+            }
+            
+            # Get OCR result (if exists)
             try:
-                ocr_result = ai_model_service.ocr_result_model.objects.get(
-                    processing_job=processing_job
-                )
+                ocr_result = model_service.ocr_result_model.objects.get(processing_job=processing_job)
                 result['ocr_data'] = {
                     'extracted_text': ocr_result.extracted_text,
                     'confidence_score': float(ocr_result.confidence_score),
                 }
-            except ai_model_service.ocr_result_model.DoesNotExist:
-                pass
+            except model_service.ocr_result_model.DoesNotExist:
+                result['ocr_data'] = None
             
-            # Get extracted data
+            # Get extracted data (if exists)
             try:
-                extracted_data = ai_model_service.extracted_data_model.objects.get(
-                    processing_job=processing_job
-                )
+                extracted_data = model_service.extracted_data_model.objects.get(processing_job=processing_job)
                 result['extracted_data'] = {
-                    'vendor_name': extracted_data.vendor_name,
+                    'vendor_name': extracted_data.vendor_name or 'Unknown',
                     'receipt_date': extracted_data.receipt_date.isoformat() if extracted_data.receipt_date else None,
                     'total_amount': float(extracted_data.total_amount) if extracted_data.total_amount else None,
-                    'currency': extracted_data.currency,
+                    'currency': extracted_data.currency or 'USD',
                     'tax_amount': float(extracted_data.tax_amount) if extracted_data.tax_amount else None,
                     'subtotal': float(extracted_data.subtotal) if extracted_data.subtotal else None,
                     'line_items': extracted_data.line_items or [],
-                    'confidence_scores': extracted_data.confidence_scores or {},
+                    'confidence_scores': extracted_data.confidence_scores or {
+                        'vendor_name': 0.0,
+                        'date': 0.0,
+                        'amount': 0.0,
+                        'overall': 0.0
+                    },
                 }
-            except ai_model_service.extracted_data_model.DoesNotExist:
-                pass
+                logger.info(f"Found extracted_data: vendor={extracted_data.vendor_name}")
+            except model_service.extracted_data_model.DoesNotExist:
+                result['extracted_data'] = {
+                    'vendor_name': 'Unknown',
+                    'receipt_date': None,
+                    'total_amount': None,
+                    'currency': 'USD',
+                    'tax_amount': None,
+                    'subtotal': None,
+                    'line_items': [],
+                    'confidence_scores': {
+                        'vendor_name': 0.0,
+                        'date': 0.0,
+                        'amount': 0.0,
+                        'overall': 0.0
+                    },
+                }
             
-            # Get category prediction
+            # Get category prediction (if exists)
             try:
-                category_pred = ai_model_service.category_prediction_model.objects.get(
-                    processing_job=processing_job
-                )
+                cat_pred = model_service.category_prediction_model.objects.get(processing_job=processing_job)
                 
-                # Get category details from receipt_service
+                # Get category details
                 category = None
-                if category_pred.predicted_category_id:
+                if cat_pred.predicted_category_id:
                     try:
-                        category = self.category_service.get_category_by_id(
-                            category_pred.predicted_category_id
-                        )
+                        from receipt_service.services.receipt_import_service import service_import
+                        category_service = service_import.category_service
+                        category = category_service.get_category_by_id(cat_pred.predicted_category_id)
                     except:
                         pass
                 
@@ -1175,70 +1221,109 @@ class ReceiptService:
                         'icon': category.icon,
                         'color': category.color,
                     } if category else None,
-                    'confidence_score': float(category_pred.confidence_score),
-                    'reasoning': category_pred.reasoning,
-                    'alternatives': category_pred.alternative_predictions or [],
+                    'confidence_score': float(cat_pred.confidence_score),
+                    'reasoning': cat_pred.reasoning or '',
+                    'alternatives': cat_pred.alternative_predictions or [],
                 }
-            except ai_model_service.category_prediction_model.DoesNotExist:
-                pass
+            except model_service.category_prediction_model.DoesNotExist:
+                result['ai_suggestion'] = None
             
             return result
             
         except Exception as e:
-            logger.warning(f"Failed to get AI results: {str(e)}")
+            logger.error(f"Failed to get AI results for receipt {receipt_id}: {str(e)}", exc_info=True)
             return None
     
     def update_processing_status(
-        self, 
-        receipt_id: str, 
-        status: str, 
+        self,
+        receipt_id: str,
+        status: str,
         result: Dict = None
     ) -> None:
         """
-        Update receipt processing status ONLY
-        Don't duplicate AI data - it's in ai_service models!
+        Update receipt processing status with immediate commit
         """
         try:
-            receipt = model_service.receipt_model.objects.get(id=receipt_id)
+            # ✅ FIX: Use atomic to ensure transaction commits immediately
+            with transaction.atomic():
+                receipt = model_service.receipt_model.objects.select_for_update().get(id=receipt_id)
+                
+                # Check if already confirmed
+                if receipt.status == 'confirmed':
+                    logger.warning(f"Attempted to update confirmed receipt {receipt_id} to {status}")
+                    return
+                
+                receipt.status = status
+                
+                if status == 'processing':
+                    if not receipt.processing_started_at:
+                        receipt.processing_started_at = timezone.now()
+                elif status in ['processed', 'failed']:
+                    receipt.processing_completed_at = timezone.now()
+                
+                receipt.save(update_fields=[
+                    'status', 
+                    'processing_started_at', 
+                    'processing_completed_at', 
+                    'updated_at'
+                ])
             
-            receipt.status = status
-            
-            if status == 'processing':
-                if not receipt.processing_started_at:
-                    receipt.processing_started_at = timezone.now()
-            elif status in ['processed', 'failed']:
-                receipt.processing_completed_at = timezone.now()
-            
-            receipt.save()
-            
+            # ✅ Log AFTER transaction commits
             logger.info(f"Receipt {receipt_id} status updated to {status}")
             
+            # ✅ FIX: Sync quota only when processed/confirmed
+            if status in ['processed', 'confirmed']:
+                try:
+                    self.quota_service.sync_user_quota(str(receipt.user_id))
+                except Exception as e:
+                    logger.warning(f"Quota sync failed after processing: {str(e)}")
+                    # Don't fail the status update if quota sync fails
+            
+        except model_service.receipt_model.DoesNotExist:
+            logger.error(f"Receipt {receipt_id} not found for status update")
+            raise ReceiptNotFoundException(
+                detail="Receipt not found",
+                context={'receipt_id': receipt_id}
+            )
         except Exception as e:
-            logger.error(f"Failed to update receipt status: {str(e)}")
-            raise
+            logger.error(f"Failed to update receipt status for {receipt_id}: {str(e)}")
+            raise DatabaseOperationException(
+                detail="Failed to update receipt status",
+                context={'receipt_id': receipt_id, 'error': str(e)}
+            )
     
     def confirm_receipt(
-        self, 
-        user, 
-        receipt_id: str, 
+        self,
+        user,
+        receipt_id: str,
         confirmation_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Confirm receipt and create ledger entry"""
         try:
-            receipt = model_service.receipt_model.objects.get(id=receipt_id)
-            
-            # Check access
-            if receipt.user_id != user.id:
-                raise ReceiptAccessDeniedException(
-                    detail="Access denied",
-                    context={'receipt_id': receipt_id}
-                )
-            
-            # Validate can confirm
-            self._validate_receipt_for_confirmation(receipt)
-            
+            # ✅ FIX: Wrap entire confirmation in transaction
             with transaction.atomic():
-                # Get AI results for defaults and correction detection
+                receipt = model_service.receipt_model.objects.select_for_update().get(
+                    id=receipt_id
+                )
+                
+                # Check access
+                if receipt.user_id != user.id:
+                    raise ReceiptAccessDeniedException(
+                        detail="Access denied",
+                        context={'receipt_id': receipt_id}
+                    )
+                
+                # Check if already confirmed (double-check with ledger)
+                if hasattr(receipt, 'ledger_entry'):
+                    raise ReceiptAlreadyConfirmedException(
+                        detail="Receipt already has a ledger entry",
+                        context={'receipt_id': receipt_id, 'ledger_id': str(receipt.ledger_entry.id)}
+                    )
+                
+                # Validate can confirm
+                self._validate_receipt_for_confirmation(receipt)
+                
+                # Get AI results for defaults
                 ai_results = self._get_ai_processing_results(receipt_id, str(user.id))
                 
                 # Get category
@@ -1252,19 +1337,18 @@ class ReceiptService:
                             detail=f"Category '{category.name}' is inactive",
                             context={'category_id': str(category.id)}
                         )
-                        
                 except model_service.category_model.DoesNotExist:
                     raise CategoryNotFoundException(
                         detail="Category not found",
                         context={'category_id': confirmation_data['category_id']}
                     )
                 
-                # Build final ledger data with defaults from AI
+                # Build ledger data with AI defaults
                 ledger_data = self._build_ledger_data(
-                    confirmation_data, 
-                    ai_results, 
-                    user, 
-                    receipt, 
+                    confirmation_data,
+                    ai_results,
+                    user,
+                    receipt,
                     category
                 )
                 
@@ -1283,7 +1367,6 @@ class ReceiptService:
                         currency=ledger_data['currency'],
                         description=ledger_data['description'],
                         tags=ledger_data['tags'],
-                        # SET CORRECTIONS DURING CREATE!
                         user_corrected_amount=corrections['amount'],
                         user_corrected_category=corrections['category'],
                         user_corrected_vendor=corrections['vendor'],
@@ -1293,8 +1376,8 @@ class ReceiptService:
                         created_from_ip=ledger_data['ip_address'],
                     )
                 except Exception as e:
-                    logger.error(f"Failed to create ledger entry: {str(e)}", exc_info=True)
-                    raise DatabaseOperationException(
+                    logger.error(f"Ledger entry creation failed: {str(e)}", exc_info=True)
+                    raise LedgerEntryCreationException(
                         detail="Failed to create ledger entry",
                         context={'receipt_id': receipt_id, 'error': str(e)}
                     )
@@ -1308,6 +1391,12 @@ class ReceiptService:
                     self.category_service.update_user_category_usage(user, category)
                 except Exception as e:
                     logger.warning(f"Failed to update category usage: {str(e)}")
+                
+                # Sync quota after confirmation
+                try:
+                    self.quota_service.sync_user_quota(str(user.id))
+                except Exception as e:
+                    logger.warning(f"Quota sync failed after confirmation: {str(e)}")
                 
                 logger.info(f"Receipt confirmed: {receipt_id} -> Ledger: {ledger_entry.id}")
                 
@@ -1326,6 +1415,16 @@ class ReceiptService:
             raise ReceiptNotFoundException(
                 detail="Receipt not found",
                 context={'receipt_id': receipt_id}
+            )
+        except (ReceiptAccessDeniedException, ReceiptAlreadyConfirmedException,
+                ReceiptNotProcessedException, CategoryNotFoundException,
+                CategoryInactiveException, LedgerEntryCreationException):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error confirming receipt {receipt_id}: {str(e)}")
+            raise DatabaseOperationException(
+                detail="Unexpected error during confirmation",
+                context={'receipt_id': receipt_id, 'error': str(e)}
             )
 
 
@@ -1397,7 +1496,7 @@ class ReceiptService:
                     'status': receipt.status,
                     'upload_date': receipt.created_at.isoformat(),
                     'file_size_mb': round(receipt.file_size / (1024 * 1024), 2),
-                    'can_be_confirmed': receipt.can_be_confirmed(),
+                    'can_be_confirmed': receipt.can_be_confirmed,
                     'amount': None,
                     'currency': None,
                     'vendor': None,

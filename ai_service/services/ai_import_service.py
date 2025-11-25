@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from receipt_service.services.file_service import FileService
     from receipt_service.services.category_service import CategoryService
     from .ocr_service import OCRService
-    from .ai_categorization_service import AICategorizationService
     from .processing_pipeline import ProcessingPipelineService
 
 
@@ -28,7 +27,6 @@ class ServiceImportService:
         self._category_service = None
         self._cache_service = None
         self._ocr_service = None
-        self._ai_categorization_service = None
         self._processing_pipeline_service = None
     
     @property
@@ -86,14 +84,6 @@ class ServiceImportService:
             from .ocr_service import OCRService
             self._ocr_service = OCRService()
         return self._ocr_service
-    
-    @property
-    def ai_categorization_service(self) -> 'AICategorizationService':
-        """Get AI categorization service instance"""
-        if self._ai_categorization_service is None:
-            from .ai_categorization_service import AICategorizationService
-            self._ai_categorization_service = AICategorizationService()
-        return self._ai_categorization_service
     
     @property
     def processing_pipeline_service(self) -> 'ProcessingPipelineService':

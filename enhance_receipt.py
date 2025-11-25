@@ -376,7 +376,7 @@ def main():
         print(f"   Text extracted: {len(extracted_text)} characters\n")
         
     except Exception as e:
-        print(f"\n❌ Error: {str(e)}")
+        print(f"\n Error: {str(e)}")
         import traceback
         traceback.print_exc()
         exit(1)

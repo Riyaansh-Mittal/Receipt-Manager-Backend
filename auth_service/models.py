@@ -62,8 +62,9 @@ class MagicLink(models.Model):
     class Meta:
         db_table = 'auth_magic_links'
         indexes = [
-            models.Index(fields=['token', 'expires_at']),
-            models.Index(fields=['email', 'created_at']),
+            models.Index(fields=['token', 'is_used']),
+            models.Index(fields=['email', 'expires_at']),
+            models.Index(fields=['created_at']),
         ]
     
     def is_expired(self) -> bool:
@@ -92,8 +93,9 @@ class EmailVerification(models.Model):
     class Meta:
         db_table = 'auth_email_verifications'
         indexes = [
-            models.Index(fields=['token', 'expires_at']),
-            models.Index(fields=['user', 'created_at']),
+            models.Index(fields=['token', 'is_verified']),
+            models.Index(fields=['user', 'is_verified', 'expires_at']),
+            models.Index(fields=['email', 'is_verified']),
         ]
     
     def is_expired(self) -> bool:

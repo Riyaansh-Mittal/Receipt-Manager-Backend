@@ -19,81 +19,60 @@ logger = logging.getLogger(__name__)
 def process_receipt_ai_task(self, receipt_id: str, user_id: str, storage_path: str) -> Dict[str, any]:
     """
     Async task for AI receipt processing
-    
-    Args:
-        receipt_id: Receipt identifier
-        user_id: User identifier  
-        storage_path: Path in storage to read file
-        
-    Returns:
-        Dict with processing results
     """
     try:
+        from receipt_service.services.receipt_import_service import service_import
+        from receipt_service.services.quota_service import QuotaService
         logger.info(f"[Task {self.request.id}] Starting AI processing for receipt {receipt_id}")
         
-        # Update receipt status to processing
-        _update_receipt_status_only(receipt_id, 'processing')
+        # ✅ FIX: Use ReceiptService method instead of standalone helper
+        receipt_service = service_import.receipt_service
+        receipt_service.update_processing_status(receipt_id, 'processing')
         
         # Load image data from storage
-        image_data = _load_image_from_storage(storage_path)
+        try:
+            image_data = _load_image_from_storage(storage_path)
+        except ValueError as load_error:
+            # ✅ Permanent file error - don't retry
+            if "File not found" in str(load_error) or "Empty file" in str(load_error):
+                logger.error(f"Permanent file error: {str(load_error)}")
+                receipt_service.update_processing_status(receipt_id, 'failed')
+                raise ProcessingPipelineException(
+                    detail="Receipt file not found or corrupted",
+                    context={'error': str(load_error)}
+                )
+            else:
+                raise  # Unknown ValueError - retry
         
-        # Process through pipeline (stores all results in AI models)
+        # Process through pipeline
         pipeline = ProcessingPipelineService()
         result = pipeline.process_receipt(receipt_id, user_id, image_data)
         
-        # Update receipt status to processed (that's all!)
-        _update_receipt_status_only(receipt_id, 'processed')
+        # ✅ FIX: Use ReceiptService method for status update
+        receipt_service.update_processing_status(receipt_id, 'processed')
         
-        logger.info(
-            f"[Task {self.request.id}] AI processing completed for receipt {receipt_id} "
-            f"in {result.get('processing_time_seconds', 0):.2f}s"
-        )
+        # Only increment quota for successful AI processing (not fallback)
+        if not result.get('used_fallback', False):
+            QuotaService().increment_upload_count(user_id=user_id)
         
-        return {
-            'status': 'success',
-            'receipt_id': receipt_id,
-            'processing_time_seconds': result.get('processing_time_seconds', 0),
-        }
+        logger.info(f"AI processing completed for receipt {receipt_id}")
+        return {'status': 'success', 'receipt_id': receipt_id}
         
-    except (ImageCorruptedException, InvalidImageFormatException) as e:
-        # Don't retry for invalid images
-        logger.error(f"Invalid image for receipt {receipt_id}: {str(e)}")
-        _update_receipt_status_only(receipt_id, 'failed')
+    except (ImageCorruptedException, InvalidImageFormatException, ProcessingPipelineException) as e:
+        # ✅ Permanent errors - DON'T RETRY
+        logger.error(f"Permanent error: {str(e)}")
+        receipt_service.update_processing_status(receipt_id, 'failed')
         raise
         
-    except ProcessingPipelineException as e:
-        # Pipeline exception - may be retryable
-        logger.error(f"Pipeline error for receipt {receipt_id}: {str(e)}")
-        
-        try:
-            # Exponential backoff
-            countdown = 60 * (2 ** self.request.retries)
-            self.retry(countdown=countdown, exc=e)
-        except self.MaxRetriesExceededError:
-            logger.error(f"Max retries exceeded for receipt {receipt_id}")
-            _update_receipt_status_only(receipt_id, 'failed')
-            raise ProcessingPipelineException(
-                detail="AI processing failed after maximum retries",
-                context={
-                    'receipt_id': receipt_id,
-                    'retries': self.request.retries,
-                    'error': str(e)
-                }
-            )
-            
     except Exception as e:
-        # Unexpected error - retry with backoff
-        logger.error(
-            f"Unexpected error processing receipt {receipt_id}: {str(e)}", 
-            exc_info=True
-        )
-        
+        # ✅ Only retry unknown errors
+        logger.error(f"Unexpected error (will retry): {str(e)}")
         try:
             countdown = 60 * (2 ** self.request.retries)
             self.retry(countdown=countdown, exc=e)
         except self.MaxRetriesExceededError:
-            logger.error(f"Max retries exceeded for receipt {receipt_id}")
-            _update_receipt_status_only(receipt_id, 'failed')
+            logger.error(f"Max retries exceeded")
+            receipt_service.update_processing_status(receipt_id, 'failed')
             raise
 
 
@@ -201,17 +180,20 @@ def health_check_ai_services() -> Dict[str, any]:
             'services': {}
         }
         
-        # Check OCR service (Tesseract)
+        # Check OCR service (PaddleOCR)
         try:
             from ..services.ocr_service import ocr_service
-            import pytesseract
             
-            version = pytesseract.get_tesseract_version()
+            # Check PaddleOCR engine availability and version info if possible
+            engine_info = ocr_service.get_engine_info()
+            status = 'healthy' if engine_info.get('available', False) else 'unhealthy'
+            
             health_status['services']['ocr'] = {
-                'status': 'healthy',
-                'version': str(version),
-                'config': ocr_service.tesseract_config
+                'status': status,
+                'engine': engine_info.get('engine', 'unknown'),
+                # Optionally add PaddleOCR specific version info here if accessible
             }
+
         except Exception as e:
             logger.error(f"OCR health check failed: {str(e)}")
             health_status['services']['ocr'] = {
@@ -277,7 +259,6 @@ def health_check_ai_services() -> Dict[str, any]:
             'timestamp': timezone.now().isoformat()
         }
 
-
 # Helper functions
 
 def _load_image_from_storage(storage_path: str) -> bytes:
@@ -319,28 +300,3 @@ def _load_image_from_storage(storage_path: str) -> bytes:
     except Exception as e:
         logger.error(f"Failed to load image: {str(e)}", exc_info=True)
         raise ValueError(f"Failed to load image from storage: {str(e)}") from e
-
-
-def _update_receipt_status_only(receipt_id: str, status: str) -> None:
-    """
-    Update ONLY the receipt status
-    Don't pass result dict - AI data is already in ProcessingJob models!
-    
-    Args:
-        receipt_id: Receipt UUID
-        status: New status (processing, processed, failed)
-    """
-    try:
-        from receipt_service.services.receipt_import_service import service_import
-        
-        receipt_service = service_import.receipt_service
-        receipt_service.update_processing_status(receipt_id, status, None)
-        
-        logger.info(f"Receipt {receipt_id} status updated to {status}")
-        
-    except Exception as e:
-        logger.error(
-            f"Failed to update receipt status for {receipt_id}: {str(e)}",
-            exc_info=True
-        )
-        # Don't raise - processing already completed/failed

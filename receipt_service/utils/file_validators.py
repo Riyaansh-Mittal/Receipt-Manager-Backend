@@ -221,8 +221,8 @@ class ReceiptFileValidator:
         Returns receipt_id if duplicate found (for retry), None otherwise
         Raises DuplicateReceiptException if receipt already processed
         """
-        from receipt_service.services.receipt_import_service import model_service
-        from ai_service.services.ai_import_service import model_service as ai_model_service
+        from receipt_service.services.receipt_model_service import model_service
+        from ai_service.services.ai_model_service import model_service as ai_model_service
         from django.utils import timezone
         from datetime import timedelta
         
@@ -239,7 +239,7 @@ class ReceiptFileValidator:
         
         # Check processing status
         processing_job = ai_model_service.processing_job_model.objects.filter(
-            receipt=receipt
+            receipt_id=receipt.id
         ).first()
         
         if processing_job:

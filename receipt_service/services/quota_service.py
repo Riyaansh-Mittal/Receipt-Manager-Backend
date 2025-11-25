@@ -123,35 +123,66 @@ class QuotaService:
                 detail="Failed to validate upload quota"
             )
     
-    def increment_upload_count(self, user) -> None:
-        """Increment user's monthly upload count and invalidate cache"""
+    def sync_user_quota(self, user_id: str) -> None:
+        """
+        Sync monthly_upload_count to actual processed/confirmed receipts.
+        Updates upload_reset_date if month changed.
+        """
+        from django.db import transaction
+        from auth_service.models import User  # Adjust if User model is elsewhere
+
         try:
-            current_month = timezone.now().date().replace(day=1)
-            
-            # Update user model
-            if user.upload_reset_date < current_month:
-                user.monthly_upload_count = 1
-                user.upload_reset_date = current_month
-            else:
-                user.monthly_upload_count += 1
-            
-            user.save(update_fields=['monthly_upload_count', 'upload_reset_date'])
-            
-            # Invalidate cache
-            cache_key = f"quota_status_{user.id}_{timezone.now().strftime('%Y_%m')}"
-            try:
-                cache.delete(cache_key)
-            except Exception as e:
-                logger.warning(f"Failed to invalidate cache: {str(e)}")
-            
-            logger.info(f"Upload count incremented: user {user.id} = {user.monthly_upload_count}")
-            
+            with transaction.atomic():
+                user = User.objects.select_for_update().get(id=user_id)
+                current_month = timezone.now().date().replace(day=1)
+
+                # Reset month if needed
+                if user.upload_reset_date < current_month:
+                    user.upload_reset_date = current_month
+
+                # Count actual receipts in current month
+                month_start = user.upload_reset_date
+                actual_count = model_service.receipt_model.objects.filter(
+                    user_id=user_id,
+                    created_at__gte=month_start,
+                    status__in=['processed', 'confirmed']
+                ).count()
+
+                # Update to accurate count
+                user.monthly_upload_count = actual_count
+                user.save(update_fields=['monthly_upload_count', 'upload_reset_date'])
+
+                # Invalidate caches
+                cache_keys = [
+                    f"quota_status_{user_id}_{timezone.now().strftime('%Y_%m')}",
+                    f"user_stats:{user_id}"
+                ]
+                for key in cache_keys:
+                    try:
+                        cache.delete(key)
+                    except Exception:
+                        pass
+
+                logger.info(
+                    f"User quota synced: {user_id} = {actual_count} "
+                    f"(reset_date: {user.upload_reset_date})"
+                )
+
+        except User.DoesNotExist:
+            logger.error(f"User not found during quota sync: {user_id}")
         except Exception as e:
-            logger.error(f"Failed to increment count: {str(e)}", exc_info=True)
+            logger.error(f"Quota sync failed for {user_id}: {str(e)}", exc_info=True)
             raise DatabaseOperationException(
-                detail="Failed to update upload quota",
-                context={'user_id': str(user.id), 'error': str(e)}
+                detail="Failed to sync quota",
+                context={'user_id': user_id, 'error': str(e)}
             )
+    
+    def increment_upload_count(self, user_id: str) -> None:
+        """
+        Legacy increment - now just triggers sync for accuracy.
+        Call this after processing/confirmation as before.
+        """
+        self.sync_user_quota(user_id)
     
     def get_quota_history(self, user, months: int = 12) -> Dict[str, Any]:
         """Get user's upload history with proper currency conversion"""

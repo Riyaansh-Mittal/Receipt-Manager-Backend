@@ -56,7 +56,6 @@ class AuthService:
     def __init__(self):
         try:
             self.magic_link_expiry = getattr(settings, 'MAGIC_LINK_EXPIRY_MINUTES', 60)
-            self.account_lock_minutes = getattr(settings, 'ACCOUNT_LOCK_MINUTES', 30)
             self.max_update_email_attempts_per_day = getattr(settings, 'MAX_UPDATE_EMAIL_ATTEMPTS_PER_DAY', 3)
         except Exception as e:
             logger.error(f"Failed to initialize AuthService: {str(e)}")
@@ -146,6 +145,8 @@ class AuthService:
         Returns:
             Tuple of (user_data_dict, is_new_user_bool)
         """
+        import time  # Add this import at top of file if not already there
+        
         # Validate token format
         if not token or len(token.strip()) < 10:
             raise InvalidMagicLinkException("Invalid token format")
@@ -164,52 +165,59 @@ class AuthService:
         MagicLink = model_service.magic_link_model
         User = model_service.user_model
         
-        # Step 1: Verify and mark magic link as used (atomic)
-        try:
-            with transaction.atomic():
-                # Get magic link with row-level lock
-                try:
-                    if cached_data:
-                        magic_link = MagicLink.objects.select_for_update().get(
-                            id=cached_data['magic_link_id']
-                        )
-                    else:
-                        magic_link = MagicLink.objects.select_for_update().get(
-                            token=token_hash,
-                            is_used=False
-                        )
-                except MagicLink.DoesNotExist:
-                    # Check specific failure reasons
-                    if MagicLink.objects.filter(token=token_hash, is_used=True).exists():
-                        raise MagicLinkAlreadyUsedException("Magic link already used")
+        # Step 1: Verify and mark magic link as used (atomic with retry)
+        magic_link = None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with transaction.atomic():
+                    # Use select_for_update with NOWAIT to fail fast on lock
+                    try:
+                        if cached_data:
+                            magic_link = MagicLink.objects.select_for_update(nowait=True).get(
+                                id=cached_data['magic_link_id']
+                            )
+                        else:
+                            magic_link = MagicLink.objects.select_for_update(nowait=True).get(
+                                token=token_hash,
+                                is_used=False
+                            )
+                    except MagicLink.DoesNotExist:
+                        # Check if it was used by concurrent request
+                        if MagicLink.objects.filter(token=token_hash, is_used=True).exists():
+                            raise MagicLinkAlreadyUsedException("Magic link already used")
+                        raise InvalidMagicLinkException("Invalid magic link token")
+                    except Exception:
+                        # Lock timeout - another request is processing
+                        if attempt < max_retries - 1:
+                            time.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                            continue
+                        raise DatabaseOperationException("Failed to acquire lock for magic link")
                     
-                    expired_link = MagicLink.objects.filter(token=token_hash).first()
-                    if expired_link and expired_link.is_expired():
+                    # Validate expiration
+                    if magic_link.is_expired():
                         raise MagicLinkExpiredException("Magic link has expired")
                     
-                    raise InvalidMagicLinkException("Invalid magic link token")
-                
-                # Validate expiration
-                if magic_link.is_expired():
-                    raise MagicLinkExpiredException("Magic link has expired")
-                
-                # Mark as used
-                magic_link.mark_as_used(request_ip)
-                
-            # Clear cache after successful verification
-            try:
-                cache.delete(cache_key)
+                    # Mark as used
+                    magic_link.mark_as_used(request_ip)
+                    break  # Success - exit retry loop
+                    
+            except (InvalidMagicLinkException, MagicLinkExpiredException, 
+                    MagicLinkAlreadyUsedException, DatabaseOperationException):
+                raise
             except Exception as e:
-                logger.warning(f"Cache clear failed: {str(e)}")
-                
-        except (InvalidMagicLinkException, MagicLinkExpiredException, 
-                MagicLinkAlreadyUsedException):
-            raise
-        except Exception as e:
-            logger.error(f"Magic link verification failed: {str(e)}")
-            raise DatabaseOperationException("Failed to verify magic link")
+                if attempt == max_retries - 1:
+                    logger.error(f"Magic link verification failed after {max_retries} attempts: {str(e)}")
+                    raise DatabaseOperationException("Failed to verify magic link")
+                # Continue to next retry
         
-        # ✅ FIX: Step 2 - Use magic link email (email at creation time)
+        # Step 2: Always clear cache after verification attempt
+        try:
+            cache.delete(cache_key)
+        except Exception as e:
+            logger.warning(f"Cache clear failed: {str(e)}")
+        
+        # ✅ FIX: Step 3 - Use magic link email (email at creation time)
         # NOT user.email (which may have changed)
         magic_link_email = magic_link.email
         is_new_user = False
@@ -243,14 +251,14 @@ class AuthService:
                 # User doesn't exist - create new one
                 try:
                     with transaction.atomic():
-                        user = User.objects.create(
+                        user = User.objects.create_user(
                             email=magic_link_email,
                             is_email_verified=True,  # Magic link verifies email
                         )
                         is_new_user = True
                         
-                    logger.info(f"New user created: {user.email}")
-                    
+                        logger.info(f"New user created: {user.email}")
+                        
                 except IntegrityError as ie:
                     # Race condition: user created by concurrent request
                     logger.warning(f"Concurrent user creation detected: {str(ie)}")
@@ -273,7 +281,7 @@ class AuthService:
                         raise DatabaseOperationException(
                             "User creation failed due to database inconsistency"
                         )
-            
+        
         except (AuthenticationException, DatabaseOperationException):
             raise
         except Exception as e:
@@ -284,7 +292,7 @@ class AuthService:
         if not user:
             raise DatabaseOperationException("Failed to retrieve user")
         
-        # Step 3: Generate JWT tokens with updated_at claim
+        # Step 4: Generate JWT tokens with updated_at claim
         try:
             jwt_service = import_service.jwt_service
             token_data = jwt_service.generate_tokens(user)  # ✅ Now includes updated_at
@@ -297,13 +305,12 @@ class AuthService:
                 context={'user_id': str(user.id)}
             )
         
-        # Step 4: Log successful authentication
+        # Step 5: Log successful authentication
         try:
             self._log_login_attempt(
                 email=magic_link_email,
                 ip_address=request_ip,
-                success=True,
-                user_id=str(user.id)
+                success=True
             )
         except Exception as e:
             logger.warning(f"Failed to log login attempt: {str(e)}")
@@ -313,7 +320,15 @@ class AuthService:
             f"(new_user={is_new_user}, user_id={user.id})"
         )
         
-        # Step 5: Build response with current user email
+        # Step 6: Optionally sync quota to ensure fresh count on login
+        try:
+            from receipt_service.services.quota_service import QuotaService
+            QuotaService().sync_user_quota(str(user.id))
+        except Exception as e:
+            logger.warning(f"Quota sync failed during login: {str(e)}")
+            # Don't fail login if quota sync fails
+        
+        # Step 7: Build response with current user email
         return {
             'user': {
                 'id': str(user.id),
@@ -550,6 +565,7 @@ class AuthService:
                 verification_locked = EmailVerification.objects.select_for_update().get(
                     id=verification.id
                 )
+                user = verification_locked.user
                 
                 # Double-check not verified by concurrent request
                 if verification_locked.is_verified:
@@ -557,7 +573,6 @@ class AuthService:
                         "This email has already been verified"
                     )
                 
-                user = verification_locked.user
                 old_email = user.email
                 new_email = verification_locked.email
                 
@@ -573,8 +588,7 @@ class AuthService:
                     )
                     # Mark verification as used (consumed)
                     verification_locked.is_verified = True
-                    verification_locked.verified_at = timezone.now()
-                    verification_locked.save(update_fields=['is_verified', 'verified_at'])
+                    verification_locked.save(update_fields=['is_verified'])
                     
                     raise EmailAlreadyExistsException(
                         "This email address is now in use by another account. "

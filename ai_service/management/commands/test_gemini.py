@@ -23,7 +23,7 @@ class Command(BaseCommand):
             # Configure Gemini
             api_key = settings.GOOGLE_GEMINI_API_KEY
             if not api_key:
-                self.stdout.write(self.style.ERROR('❌ GEMINI_API_KEY not configured'))
+                self.stdout.write(self.style.ERROR(' GEMINI_API_KEY not configured'))
                 return
             
             self.stdout.write(f"Testing Gemini API with model: {model_name}")
@@ -60,7 +60,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS('\n✅ All tests passed!'))
             
         except Exception as e:
-            self.stdout.write(self.style.ERROR(f'\n❌ Test failed: {str(e)}'))
+            self.stdout.write(self.style.ERROR(f'\n Test failed: {str(e)}'))
             
             # Check common issues
             if 'API key' in str(e):

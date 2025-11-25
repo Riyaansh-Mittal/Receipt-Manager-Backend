@@ -35,7 +35,7 @@ from ..serializers.ledger_serializers import QuotaStatusSerializer
 import logging
 from rest_framework import status, generics
 from django.core.cache import cache
-from ....utils.pagination import CachedPagination
+from ....utils.pagination import LargeResultSetPagination
 from typing import Optional
 
 
@@ -132,6 +132,18 @@ class ReceiptExtractedDataView(APIView):
     def get(self, request, receipt_id):
         """Get extracted data for a receipt"""
         try:
+
+            # ✅ FIX: Check receipt access and status first
+            receipt_service = service_import.receipt_service
+            receipt = receipt_service.get_receipt_details(request.user, receipt_id)
+            
+            # Only allow access if receipt is processed or confirmed
+            if receipt['status'] not in ['processed', 'confirmed']:
+                raise ReceiptNotProcessedException(
+                    detail=f"Receipt must be processed to view extracted data. Current status: {receipt['status']}",
+                    context={'receipt_id': receipt_id, 'current_status': receipt['status']}
+                )
+            
             from ai_service.services.ai_model_service import model_service as ai_model_service
             
             # Get latest processing job
@@ -322,7 +334,13 @@ class ReceiptConfirmView(APIView):
     def post(self, request, receipt_id):
         """Confirm receipt data and create ledger entry"""
         try:
-            serializer = ReceiptConfirmSerializer(data=request.data)
+            serializer = ReceiptConfirmSerializer(
+                data=request.data,
+                context={
+                    'request': request,
+                    'receipt_id': receipt_id
+                }
+            )
             if not serializer.is_valid():
                 raise ValidationException(
                     detail="Invalid confirmation data",
@@ -369,49 +387,31 @@ class ReceiptConfirmView(APIView):
 # receipt_service/api/v1/views/receipt_views.py
 
 class ReceiptListView(generics.ListAPIView):
-    """Get paginated list of user receipts with caching"""
+    """Get paginated list of user receipts"""
     permission_classes = [IsAuthenticated]
     serializer_class = ReceiptListSerializer
-    pagination_class = CachedPagination
+    pagination_class = LargeResultSetPagination  # ✅ Use non-cached pagination
     
     def list(self, request, *args, **kwargs):
-        """List receipts with smart caching"""
+        """List receipts with filters"""
         try:
-            # Parse filters
+            # Parse and validate filters
             status_filter = self._validate_status_filter(request.GET.get('status'))
-            ordering = request.GET.get('ordering', '-created_at')
-            
-            # Build cache key
-            cache_key = self._get_cache_key(
-                request.user.id, 
-                status_filter, 
-                ordering,
-                request.GET.get('page', 1),
-                request.GET.get('page_size', 20)
-            )
-            
-            # Try cache first
-            paginator = self.pagination_class()
-            cached_response = paginator.get_cached_response(request)
-            if cached_response:
-                return cached_response
-            
-            # Cache miss - fetch fresh data
-            logger.debug(f"Cache miss for receipts: {cache_key}")
+            ordering = self._validate_ordering(request.GET.get('ordering', '-created_at'))
             
             # Get queryset
             queryset = self.filter_queryset(self.get_queryset())
             
-            # ✅ FIX: Use DRF's pagination properly
+            # Paginate
             page = self.paginate_queryset(queryset)
             
             if page is not None:
                 serializer = self.get_serializer(page, many=True)
                 
-                # ✅ Use get_paginated_response() - this generates next/previous links
+                # Get paginated response (includes count, next, previous, results)
                 paginated_response = self.get_paginated_response(serializer.data)
                 
-                # Add custom fields to the response data
+                # Add custom metadata to response
                 response_data = paginated_response.data
                 response_data['filters'] = {
                     'status': status_filter,
@@ -421,17 +421,10 @@ class ReceiptListView(generics.ListAPIView):
                     'upload_new': '/receipts/v1/upload/',
                     'check_quota': '/api/v1/user/quota-status/'
                 }
-                response_data['cache_hit'] = False
-                
-                # Cache the full response
-                try:
-                    cache.set(cache_key, response_data, timeout=300)
-                except Exception as cache_error:
-                    logger.warning(f"Failed to cache: {str(cache_error)}")
                 
                 return Response(response_data, status=status.HTTP_200_OK)
             
-            # No pagination (shouldn't happen with pagination_class set)
+            # No pagination (fallback - shouldn't happen with pagination_class set)
             serializer = self.get_serializer(queryset, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
             
@@ -444,8 +437,9 @@ class ReceiptListView(generics.ListAPIView):
             )
     
     def get_queryset(self):
-        """Get filtered queryset"""
+        """Get filtered and ordered queryset"""
         from ....services.receipt_model_service import model_service
+        
         queryset = model_service.receipt_model.objects.filter(
             user=self.request.user
         ).select_related('ledger_entry__category')
@@ -456,17 +450,15 @@ class ReceiptListView(generics.ListAPIView):
             queryset = queryset.filter(status=status_filter)
         
         # Apply ordering
-        ordering = self.request.GET.get('ordering', '-created_at')
-        valid_orderings = ['created_at', '-created_at', 'updated_at', '-updated_at']
-        if ordering in valid_orderings:
-            queryset = queryset.order_by(ordering)
-        else:
-            queryset = queryset.order_by('-created_at')
+        ordering = self._validate_ordering(
+            self.request.GET.get('ordering', '-created_at')
+        )
+        queryset = queryset.order_by(ordering)
         
         return queryset
     
     def _validate_status_filter(self, status: Optional[str]) -> Optional[str]:
-        """Validate status filter"""
+        """Validate status filter parameter"""
         if not status:
             return None
         
@@ -483,30 +475,19 @@ class ReceiptListView(generics.ListAPIView):
         
         return status
     
-    def _get_cache_key(
-        self, 
-        user_id: str, 
-        status_filter: Optional[str],
-        ordering: str,
-        page: int,
-        page_size: int
-    ) -> str:
-        """Generate cache key"""
-        import hashlib
-        import json
+    def _validate_ordering(self, ordering: str) -> str:
+        """Validate ordering parameter"""
+        valid_orderings = [
+            'created_at', '-created_at', 
+            'updated_at', '-updated_at',
+            'total_amount', '-total_amount'
+        ]
         
-        cache_data = {
-            'user_id': str(user_id),
-            'status': status_filter,
-            'ordering': ordering,
-            'page': page,
-            'page_size': page_size
-        }
+        if ordering not in valid_orderings:
+            logger.warning(f"Invalid ordering '{ordering}', using default '-created_at'")
+            return '-created_at'
         
-        key_str = json.dumps(cache_data, sort_keys=True)
-        key_hash = hashlib.md5(key_str.encode()).hexdigest()
-        
-        return f"receipts_list:{key_hash}"
+        return ordering
 
 class UserQuotaStatusView(APIView):
     """Get user's quota status"""

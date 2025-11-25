@@ -1,9 +1,9 @@
-from rest_framework import serializers
 from decimal import Decimal
-from datetime import date
-from ....services.receipt_import_service import service_import
+from datetime import date, timedelta
+from rest_framework import serializers
 from ....services.receipt_model_service import model_service
 from ....utils.currency_utils import currency_manager
+from shared.utils.exceptions import ValidationException
 
 import logging
 logger = logging.getLogger(__name__)
@@ -96,15 +96,21 @@ class ReceiptListSerializer(serializers.ModelSerializer):
         }
         return progress_map.get(obj.status, 0)
     
-    def _get_ledger_data(self, obj):
-        """Helper to get ledger entry data (cached per object)"""
-        if not hasattr(self, '_ledger_cache'):
-            self._ledger_cache = {}
-        
-        if obj.id not in self._ledger_cache:
+    def get_ledger_data(self, obj):
+        """Helper to get ledger entry data cached per request"""
+        # Use request-level cache instead of serializer-level
+        request = self.context.get('request')
+        if not request:
+            return None
+            
+        cache_key = f'ledger_data_{obj.id}'
+        if not hasattr(request, '_receipt_cache'):
+            request._receipt_cache = {}
+            
+        if cache_key not in request._receipt_cache:
             if obj.status == 'confirmed' and hasattr(obj, 'ledger_entry'):
                 ledger = obj.ledger_entry
-                self._ledger_cache[obj.id] = {
+                request._receipt_cache[cache_key] = {
                     'amount': float(ledger.amount),
                     'currency': ledger.currency,
                     'vendor': ledger.vendor,
@@ -114,35 +120,35 @@ class ReceiptListSerializer(serializers.ModelSerializer):
                         'name': ledger.category.name,
                         'icon': ledger.category.icon,
                         'color': ledger.category.color,
-                    }
+                    },
                 }
             else:
-                self._ledger_cache[obj.id] = None
-        
-        return self._ledger_cache[obj.id]
+                request._receipt_cache[cache_key] = None
+                
+        return request._receipt_cache[cache_key]
     
     def get_amount(self, obj):
-        data = self._get_ledger_data(obj)
+        data = self.get_ledger_data(obj)
         return data['amount'] if data else None
     
     def get_currency(self, obj):
-        data = self._get_ledger_data(obj)
+        data = self.get_ledger_data(obj)
         return data['currency'] if data else None
     
     def get_vendor(self, obj):
-        data = self._get_ledger_data(obj)
+        data = self.get_ledger_data(obj)
         return data['vendor'] if data else None
     
     def get_date(self, obj):
-        data = self._get_ledger_data(obj)
+        data = self.get_ledger_data(obj)
         return data['date'] if data else None
     
     def get_category(self, obj):
-        data = self._get_ledger_data(obj)
+        data = self.get_ledger_data(obj)
         return data['category'] if data else None
     
     def get_formatted_amount(self, obj):
-        data = self._get_ledger_data(obj)
+        data = self.get_ledger_data(obj)
         if data and data['amount'] and data['currency']:
             try:
                 return currency_manager.format_amount(
@@ -255,7 +261,7 @@ class ReceiptDetailSerializer(serializers.Serializer):
         return actions
 
 class ReceiptConfirmSerializer(serializers.Serializer):
-    """Serializer for receipt confirmation data"""
+    """Serializer for receipt confirmation data with status validation"""
     
     # Required fields - user MUST confirm these
     date = serializers.DateField(
@@ -310,72 +316,109 @@ class ReceiptConfirmSerializer(serializers.Serializer):
         help_text="Optional tags for categorization"
     )
     
-    # Validation methods remain the same...
+    def validate(self, data):
+        """✅ FIX: Validate receipt status and prevent double confirmation"""
+        request = self.context.get('request')
+        if not request:
+            raise ValidationException("Request context required")
+        
+        # Get receipt_id from context (view kwargs)
+        receipt_id = None
+        if 'view' in self.context:
+            receipt_id = self.context['view'].kwargs.get('receipt_id')
+        elif 'receipt_id' in self.context:
+            receipt_id = self.context['receipt_id']
+            
+        if not receipt_id:
+            raise ValidationException("Receipt ID required")
+        
+        try:
+            receipt = model_service.receipt_model.objects.get(id=receipt_id)
+        except model_service.receipt_model.DoesNotExist:
+            raise ValidationException("Receipt not found")
+        
+        # ✅ FIX: Check receipt status
+        if receipt.status != 'processed':
+            raise ValidationException(
+                f"Cannot confirm receipt with status '{receipt.status}'. Must be 'processed'."
+            )
+        
+        # ✅ FIX: Check if already confirmed (double confirmation prevention)
+        if hasattr(receipt, 'ledger_entry'):
+            raise ValidationException("Receipt already has a ledger entry")
+        
+        return data
+    
     def validate_date(self, value):
+        """Date validation"""
         if value > date.today():
-            raise serializers.ValidationError("Receipt date cannot be in the future")
+            raise ValidationException("Receipt date cannot be in the future")
         
         if value.year < 2000:
-            raise serializers.ValidationError("Receipt date too old (minimum year: 2000)")
+            raise ValidationException("Receipt date too old (minimum year: 2000)")
         
-        from datetime import timedelta
         two_years_ago = date.today() - timedelta(days=730)
         if value < two_years_ago:
-            raise serializers.ValidationError(
-                "Receipt date is more than 2 years old"
-            )
+            raise ValidationException("Receipt date is more than 2 years old")
         
         return value
     
     def validate_amount(self, value):
+        """Amount validation"""
         if value <= 0:
-            raise serializers.ValidationError("Amount must be greater than zero")
+            raise ValidationException("Amount must be greater than zero")
         
         if value > Decimal('999999.99'):
-            raise serializers.ValidationError("Amount exceeds maximum allowed value")
+            raise ValidationException("Amount exceeds maximum allowed value")
         
         return value
     
     def validate_currency(self, value):
+        """Currency validation"""
         if not value:
-            raise serializers.ValidationError("Currency is required")
+            raise ValidationException("Currency is required")
         
         value = value.upper()
         if not currency_manager.is_valid_currency(value):
-            raise serializers.ValidationError(
+            raise ValidationException(
                 f"Invalid currency code. Supported: {', '.join(currency_manager.get_currency_codes())}"
             )
         
         return value
     
     def validate_category_id(self, value):
+        """Category validation"""
         try:
             category = model_service.category_model.objects.get(id=value, is_active=True)
             return value
         except model_service.category_model.DoesNotExist:
-            raise serializers.ValidationError("Invalid or inactive category")
+            raise ValidationException("Invalid or inactive category")
     
     def validate_vendor(self, value):
+        """Vendor validation"""
         if value:
             value = value.strip()
             if len(value) > 255:
-                raise serializers.ValidationError("Vendor name too long (max 255 characters)")
+                raise ValidationException("Vendor name too long (max 255 characters)")
             
-            if any(char in value for char in ['<', '>', '"', "'"]):
-                raise serializers.ValidationError("Vendor name contains invalid characters")
+            # Sanitize HTML/special chars
+            import re
+            if re.search(r'[<>"\']', value):
+                raise ValidationException("Vendor name contains invalid characters")
         
         return value or ''
     
     def validate_tags(self, value):
+        """Tags validation"""
         if value:
             if len(value) > 10:
-                raise serializers.ValidationError("Maximum 10 tags allowed")
+                raise ValidationException("Maximum 10 tags allowed")
             
             for tag in value:
                 if not tag.strip():
-                    raise serializers.ValidationError("Empty tags not allowed")
+                    raise ValidationException("Empty tags not allowed")
                 if len(tag.strip()) > 50:
-                    raise serializers.ValidationError("Each tag max 50 characters")
+                    raise ValidationException("Each tag max 50 characters")
         
         return [tag.strip() for tag in value] if value else []
 

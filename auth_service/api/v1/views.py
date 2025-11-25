@@ -544,7 +544,7 @@ class UserStatsView(APIView):
                         'remaining_uploads': max(0, 50 - user.monthly_upload_count),
                         'account_age_days': (timezone.now() - user.created_at).days,
                         'email_verified': user.is_email_verified,
-                        'account_status': 'active' if not user.is_active else 'inactive',
+                        'account_status': 'active' if user.is_active else 'inactive',
                     }
                     
                     # Cache stats for 5 minutes

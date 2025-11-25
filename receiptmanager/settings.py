@@ -12,9 +12,10 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
+import dj_database_url
 from celery.schedules import crontab
+from datetime import timedelta
 from dotenv import load_dotenv
-load_dotenv()  # Load environment variables from a .env file
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -23,84 +24,56 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get("SECRET_KEY", "unsafe-default")
+# -----------------------------------------
+# ENVIRONMENT DETECTION & LOAD .env FILE
+# -----------------------------------------
+ENVIRONMENT = os.getenv('DJANGO_ENVIRONMENT', 'development').lower()
+env_file = BASE_DIR / f'.env.{ENVIRONMENT}'
+load_dotenv(dotenv_path=env_file)
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# -----------------------------------------
+# SECURITY & DEBUG
+# -----------------------------------------
 
-# ALLOWED_HOSTS = ['*'] 
-ALLOWED_HOSTS = [
-    'localhost', '127.0.0.1', '[::1]',
-    'localhost:3000',
-    '127.0.0.1:3000',
-    '0869a9744804.ngrok-free.app',  # Your ngrok domain
-    '.ngrok-free.app',  # All ngrok domains
-]
+SECRET_KEY = os.getenv('SECRET_KEY', 'unsafe-default')
+DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://receipt-manager-frontend-2dyd.onrender.com')
 
-from datetime import timedelta
+# Hosts allowed to serve app
+ALLOWED_HOSTS = [host.strip() for host in os.getenv("ALLOWED_HOSTS", "localhost").split(",")]
 
-SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
-    'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': True,
-    'UPDATE_LAST_LOGIN': True,
-    'ALGORITHM': 'HS256',
-    'SIGNING_KEY': SECRET_KEY,
-    'VERIFYING_KEY': None,
-    'AUDIENCE': None,
-    'ISSUER': None,
-    'AUTH_HEADER_TYPES': ('Bearer',),
-    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
-    'USER_ID_FIELD': 'id',
-    'USER_ID_CLAIM': 'user_id',
-    'USER_AUTHENTICATION_RULE': 'rest_framework_simplejwt.authentication.default_user_authentication_rule',
-    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
-    'TOKEN_TYPE_CLAIM': 'token_type',
-    'TOKEN_USER_CLASS': 'rest_framework_simplejwt.models.TokenUser',
-    'JTI_CLAIM': 'jti',
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://receipt-manager-frontend-2dyd.onrender.com')
+
+
+# -----------------------------------------
+# DATABASE CONFIGURATION
+# -----------------------------------------
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
+#     }
+# }
+
+DATABASES = {
+    'default': dj_database_url.config(
+        default=os.getenv('DATABASE_URL', 'postgresql://postgres:Riyaan$hM07@localhost:5432/ReceiptManager'),
+        conn_max_age=600,
+        ssl_require=False  # set True in production if you want SSL enforced
+    )
 }
 
-# Custom User Model
-AUTH_USER_MODEL = 'auth_service.User'  # Important: Set custom user model
-
-# Pagination Settings
-REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-        'rest_framework.authentication.SessionAuthentication',  # For admin
-    ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
-    ],
-    # Add this to handle CSRF
-    # 'DEFAULT_RENDERER_CLASSES': [
-    #     'rest_framework.renderers.JSONRenderer',
-    # ],
-    # 'DEFAULT_PARSER_CLASSES': [
-    #     'rest_framework.parsers.JSONParser',
-    #     'rest_framework.parsers.FormParser',
-    #     'rest_framework.parsers.MultiPartParser',
-    # ],
-    'PAGE_SIZE': 20,
-    'EXCEPTION_HANDLER': 'shared.utils.exceptions.exception_handler',
-}
-
+# -----------------------------------------
+# REDIS CONFIGURATION
+# -----------------------------------------
 # Redis connection info
-REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
-REDIS_DB_CACHE = os.environ.get('REDIS_DB_CACHE', 1)  # Cache for pagination
-REDIS_DB_BROKER = os.environ.get('REDIS_DB_BROKER', 0)  # Broker for Celery
 
-CELERY_BROKER_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB_BROKER}"  # Redis message broker
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 0)  # Redis message broker
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 
 # Store Celery task results
-CELERY_RESULT_BACKEND = 'django-db'
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'django-db')
 
 CELERY_TASK_ACKS_LATE = True  # Ensure tasks are not lost if worker crashes
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
@@ -398,6 +371,70 @@ CELERY_TASK_QUEUES = {
     },
 }
 
+# -----------------------------------------
+# EMAIL CONFIGURATION
+# -----------------------------------------
+EMAIL_BACKEND = os.getenv(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.filebased.EmailBackend' if DEBUG else 'django.core.mail.backends.smtp.EmailBackend'
+)
+EMAIL_FILE_PATH = os.getenv('EMAIL_FILE_PATH', BASE_DIR / 'sent_emails') if DEBUG else None
+
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com' if not DEBUG else '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587 if not DEBUG else 0))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True' if not DEBUG else 'False').lower() == 'true'
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Receipt Manager <noreply@receiptmanager.com>')
+
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'UPDATE_LAST_LOGIN': True,
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'VERIFYING_KEY': None,
+    'AUDIENCE': None,
+    'ISSUER': None,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+    'USER_AUTHENTICATION_RULE': 'rest_framework_simplejwt.authentication.default_user_authentication_rule',
+    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
+    'TOKEN_TYPE_CLAIM': 'token_type',
+    'TOKEN_USER_CLASS': 'rest_framework_simplejwt.models.TokenUser',
+    'JTI_CLAIM': 'jti',
+}
+
+# Custom User Model
+AUTH_USER_MODEL = 'auth_service.User'  # Important: Set custom user model
+
+# Pagination Settings
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'rest_framework.authentication.SessionAuthentication',  # For admin
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    # Add this to handle CSRF
+    # 'DEFAULT_RENDERER_CLASSES': [
+    #     'rest_framework.renderers.JSONRenderer',
+    # ],
+    # 'DEFAULT_PARSER_CLASSES': [
+    #     'rest_framework.parsers.JSONParser',
+    #     'rest_framework.parsers.FormParser',
+    #     'rest_framework.parsers.MultiPartParser',
+    # ],
+    'PAGE_SIZE': 20,
+    'EXCEPTION_HANDLER': 'shared.utils.exceptions.exception_handler',
+}
+
 
 AI_SERVICE = {
     'OCR_ENGINE': 'tesseract',
@@ -417,7 +454,7 @@ OCR_MAX_PROCESSING_TIME = 30
 OCR_CACHE_TTL = 3600
 
 # Tesseract Configuration
-TESSERACT_CMD = None  # Auto-detect, or set explicit path for Windows:
+# TESSERACT_CMD = None  # Auto-detect, or set explicit path for Windows:
 # TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 
@@ -444,6 +481,7 @@ INSTALLED_APPS = [
     'corsheaders',  # If using CORS
     'django_celery_results',
     'django_celery_beat',
+    'storages',
 
     # Local apps
     'auth_service.apps.AuthServiceConfig',
@@ -511,33 +549,6 @@ WSGI_APPLICATION = 'receiptmanager.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'ReceiptManager',
-        'USER': 'postgres',
-        'PASSWORD': 'Riyaan$hM07',
-        'HOST': 'localhost',
-        'PORT': '5432',
-    }
-}
-
-EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
-EMAIL_FILE_PATH = os.path.join(BASE_DIR, 'sent_emails')
-
-DEFAULT_FROM_EMAIL = 'Receipt Manager <noreply@receiptmanager.com>'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "riyaanshmittal14@gmail.com")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
-
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -558,7 +569,6 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # Security Settings
-ACCOUNT_LOCK_MINUTES = 30
 MAGIC_LINK_EXPIRY_MINUTES = 60
 MAX_UPDATE_EMAIL_ATTEMPTS_PER_DAY=10
 # Security and rate limiting settings
@@ -721,6 +731,7 @@ LOGGING = {
             "level": "DEBUG",
             "class": "logging.StreamHandler",
             "formatter": "verbose",
+            "stream": "ext://sys.stdout",
             "filters": ["correlation_id", "user_context"],
         },
         
@@ -816,16 +827,6 @@ LOGGING = {
             "filters": ["correlation_id"],
         },
         
-        # Database logs
-        "db_file": {
-            "level": "ERROR",
-            "class": "logging.handlers.RotatingFileHandler",
-            "filename": os.path.join(LOGS_DIR, "database.log"),
-            "maxBytes": 1024 * 1024 * 5,  # 5 MB
-            "backupCount": 5,
-            "formatter": "simple",
-        },
-        
         # Audit logs
         "audit_file": {
             "level": "INFO",
@@ -856,12 +857,7 @@ LOGGING = {
             "level": "WARNING",
             "propagate": False,
         },
-        "django.db.backends": {
-            "handlers": ["db_file"],
-            "level": "ERROR",
-            "propagate": False,
-        },
-        
+
         # Application loggers
         "auth_service": {
             "handlers": ["console", "app_file", "error_file", "security_file", "audit_file"],
@@ -1043,14 +1039,41 @@ EXCHANGE_RATE_CACHE_TIMEOUT = os.getenv("EXCHANGE_RATE_CACHE_TIMEOUT", 3600)
 FALLBACK_CACHE_TIMEOUT = os.getenv("FALLBACK_CACHE_TIMEOUT", 86400)
 
 # Receipt File Upload Configuration (in bytes)
-RECEIPT_MAX_FILE_SIZE= os.getenv("RECEIPT_MAX_FILE_SIZE", 10485760)
+RECEIPT_MAX_FILE_SIZE = int(os.getenv("RECEIPT_MAX_FILE_SIZE", 10485760))
+
+# Toggle S3 vs local using env
+USE_S3_STORAGE = os.getenv("USE_S3_STORAGE", "false").lower() == "true"
+
+if USE_S3_STORAGE:
+    # S3 configuration (used by ReceiptFileStorage)
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+    AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME")
+    AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "us-east-2")
+
+    # Optional S3 tuning
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = "private"
+    AWS_S3_ADDRESSING_STYLE = "virtual"
+    AWS_QUERYSTRING_AUTH = True  # signed URLs for private objects
+
+    # MEDIA_ROOT not used for S3, keep a dummy value
+    MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+    MEDIA_URL = "/media/"
+else:
+    # Local development storage
+    MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+    MEDIA_URL = "/media/"
 
 
-USE_S3_STORAGE = False  # disable S3
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+# AI Processing Pipeline Mode
+# False: OCR → Gemini (traditional pipeline)
+# True: Direct Image → Gemini (skip OCR, send image directly)
+USE_GEMINI_ONLY_IMAGE_INPUT = os.getenv('USE_GEMINI_ONLY_IMAGE_INPUT', 'false').lower() == 'true'
 
+# OCR Configuration
+OCR_ENGINE = os.getenv('OCR_ENGINE', 'paddleocr')
+OCR_MIN_CONFIDENCE = float(os.getenv('OCR_MIN_CONFIDENCE', '0.3'))
 
-# celery -A receiptmanager worker --loglevel=info -P gevent -Q default,ai_processing,ai_batch,maintenance,cache,monitoring,export
-# celery -A receiptmanager beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
-# celery -A receiptmanager flower --port=5555 --broker=redis://localhost:6379/0
+# Gemini Debug Mode - prints to console
+GEMINI_DEBUG_MODE = os.getenv('GEMINI_DEBUG_MODE', 'False').lower() == 'true'

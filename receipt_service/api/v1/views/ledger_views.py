@@ -5,6 +5,7 @@ from django.http import HttpResponse, FileResponse
 from rest_framework import generics, status
 import uuid
 from datetime import datetime
+from django.db import transaction
 from shared.utils.responses import success_response
 from ....utils.pagination import CachedPagination
 from ....services.receipt_import_service import service_import
@@ -151,85 +152,79 @@ class LedgerEntryDetailView(generics.RetrieveUpdateAPIView):
         Override update to add business rules and proper exception handling
         """
         try:
-            # Get the instance
-            instance = self.get_object()
-            
-            # Business rule: Check 30-day update window
-            entry_age = timezone.now() - instance.created_at
-            if entry_age.days > 30:
-                raise BusinessLogicException(
-                    detail="Ledger entry cannot be updated after 30 days",
-                    context={
-                        'created_at': instance.created_at.isoformat(),
-                        'days_old': entry_age.days,
-                        'max_days': 30
+            # ✅ FIX: Use select_for_update and transaction.atomic
+            with transaction.atomic():
+                # Get the instance with row-level lock
+                instance = model_service.ledger_entry_model.objects.select_for_update().get(
+                    id=kwargs['entry_id'],
+                    user=request.user
+                )
+                
+                # Business rule: Check 30-day update window
+                entry_age = timezone.now() - instance.created_at
+                if entry_age.days > 30:
+                    raise BusinessLogicException(
+                        detail="Ledger entry cannot be updated after 30 days",
+                        context={
+                            'created_at': instance.created_at.isoformat(),
+                            'days_old': entry_age.days,
+                            'max_days': 30
+                        }
+                    )
+                
+                # Get update serializer
+                serializer = self.get_serializer(
+                    instance,
+                    data=request.data,
+                    partial=kwargs.get('partial', False)
+                )
+                
+                # Validate
+                try:
+                    serializer.is_valid(raise_exception=True)
+                except DRFValidationError as e:
+                    raise ValidationException(
+                        detail="Invalid update data",
+                        context={'validation_errors': e.detail}
+                    )
+                
+                # Perform update
+                serializer.save()
+                
+                # Log success
+                logger.info(
+                    f"Ledger entry {instance.id} updated by user {request.user.id}: "
+                    f"fields={list(serializer.validated_data.keys())}"
+                )
+                
+                # Return detailed response
+                detail_serializer = LedgerEntryDetailSerializer(instance)
+                return success_response(
+                    message="Ledger entry updated successfully",
+                    data={
+                        'entry': detail_serializer.data,
+                        'updated_fields': list(serializer.validated_data.keys()),
+                        'restrictions': {
+                            'immutable_fields': ['amount', 'date', 'currency', 'receipt'],
+                            'reason': 'Financial and audit integrity'
+                        }
                     }
                 )
-            
-            # Get update serializer
-            serializer = self.get_serializer(
-                instance,
-                data=request.data,
-                partial=kwargs.get('partial', False)
-            )
-            
-            # Validate
-            try:
-                serializer.is_valid(raise_exception=True)
-            except DRFValidationError as e:
-                raise ValidationException(
-                    detail="Invalid update data",
-                    context={'validation_errors': e.detail}
-                )
-            
-            # Perform update
-            self.perform_update(serializer)
-            
-            # Log success
-            logger.info(
-                f"Ledger entry {instance.id} updated by user {request.user.id}: "
-                f"fields={list(serializer.validated_data.keys())}"
-            )
-            
-            # Return detailed response
-            detail_serializer = LedgerEntryDetailSerializer(instance)
-            
-            return success_response(
-                message="Ledger entry updated successfully",
-                data={
-                    'entry': detail_serializer.data,
-                    'updated_fields': list(serializer.validated_data.keys()),
-                    'restrictions': {
-                        'immutable_fields': ['amount', 'date', 'currency', 'receipt'],
-                        'reason': 'Financial and audit integrity'
-                    }
-                }
-            )
-        
+                
         except model_service.ledger_entry_model.DoesNotExist:
             raise LedgerEntryNotFoundException(
                 detail="Ledger entry not found",
                 context={'entry_id': kwargs.get('entry_id')}
             )
-        
-        except (ValidationException, BusinessLogicException, 
-                LedgerEntryNotFoundException):
+        except (ValidationException, BusinessLogicException, LedgerEntryNotFoundException):
             # Re-raise known exceptions
             raise
-        
         except Exception as e:
-            logger.error(
-                f"Unexpected error updating ledger entry: {str(e)}", 
-                exc_info=True
-            )
+            logger.error(f"Unexpected error updating ledger entry: {str(e)}", exc_info=True)
             raise LedgerEntryUpdateException(
                 detail="Failed to update ledger entry",
                 context={'error': str(e)}
             )
-    
-    def perform_update(self, serializer):
-        """Perform the actual update"""
-        serializer.save()
 
 class LedgerSummaryView(APIView):
     """Get spending summary for different time periods"""
