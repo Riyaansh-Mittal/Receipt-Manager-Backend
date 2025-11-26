@@ -16,6 +16,7 @@ import dj_database_url
 from celery.schedules import crontab
 from datetime import timedelta
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -426,8 +427,8 @@ MIDDLEWARE = [
     'shared.middleware.logging_middleware.LoggingContextMiddleware',
     
     # CSRF exemption middleware MUST come before CsrfViewMiddleware
-    # 'auth_service.middleware.api_csrf_middleware.CSRFExemptAPIMiddleware',
-    # 'django.middleware.csrf.CsrfViewMiddleware', 
+    'auth_service.middleware.api_csrf_middleware.CSRFExemptAPIMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware', 
     
     # Authentication middleware (REQUIRED for admin)
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -526,37 +527,51 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = True  # Allow all origins (for development)
+parsed_frontend = urlparse(FRONTEND_URL)
 
-# For development - disable some security features
-SECURE_CROSS_ORIGIN_OPENER_POLICY = None
-CSRF_COOKIE_SECURE = False
-SESSION_COOKIE_SECURE = False
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    f"{parsed_frontend.scheme}://{parsed_frontend.netloc}",
+]
 
 CORS_ALLOW_CREDENTIALS = True
+
 CORS_ALLOW_HEADERS = [
-    'accept',
-    'accept-encoding',
-    'authorization',
-    'content-type',
-    'dnt',
-    'origin',
-    'user-agent',
-    'x-csrftoken',
-    'x-requested-with',
-    'ngrok-skip-browser-warning',  # ✅ Important for ngrok
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+    "ngrok-skip-browser-warning",  # fine to leave, no harm
 ]
+
 CORS_ALLOW_METHODS = [
-    'DELETE',
-    'GET',
-    'OPTIONS',
-    'PATCH',
-    'POST',
-    'PUT',
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
 ]
 
+if os.getenv("DJANGO_ENVIRONMENT", "development").lower() == "production":
+    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_SECURE = True
+    SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
 
+    # CSRF trusted origins for frontend
+    CSRF_TRUSTED_ORIGINS = [
+        f"{parsed_frontend.scheme}://{parsed_frontend.netloc}",
+    ]
+else:
+    # Dev
+    CSRF_COOKIE_SECURE = False
+    SESSION_COOKIE_SECURE = False
+    SECURE_CROSS_ORIGIN_OPENER_POLICY = None
 
 
 # Create logs directory if it doesn't exist
