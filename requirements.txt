@@ -29,7 +29,10 @@ numpy>=1.26.0  # Compatible with Python 3.13
 opencv-python-headless==4.10.0.84  # Alternative if GUI not needed
 
 # Utilities
+# File type detection - cross-platform
 python-magic==0.4.27
+python-magic-bin==0.4.14; sys_platform == 'win32'
+
 python-dateutil==2.9.0
 pytz==2024.1
 
@@ -37,8 +40,6 @@ pytz==2024.1
 black==24.8.0
 flake8==7.1.1
 isort==5.13.2
-
-python-magic-bin
 
 django-storages[boto3]
 pytest
@@ -50,5 +51,8 @@ faker
 freezegun 
 pytest-mock 
 responses
+
+# Production server
+gunicorn
 
 
