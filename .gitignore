@@ -302,7 +302,6 @@ tessdata/
 *.traineddata
 
 # Pre-trained models
-models/
 *.h5
 *.pkl
 *.joblib
