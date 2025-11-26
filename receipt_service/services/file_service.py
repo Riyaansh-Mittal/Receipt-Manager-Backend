@@ -3,7 +3,9 @@
 import logging
 from typing import Dict, Any, Optional
 from io import BytesIO
-
+from django.utils import timezone
+from pathlib import Path
+from uuid import uuid4
 from django.db import transaction
 from PIL import Image
 
@@ -82,7 +84,7 @@ class FileService:
                 
                 return {
                     'receipt_id': str(receipt.id),
-                    'storage_path': receipt.file_path.name,
+                    'storage_path': receipt.file_path,
                     'file_info': file_info,
                     'is_retry': True,
                     'receipt': receipt
@@ -95,14 +97,23 @@ class FileService:
                 # Create receipt record
                 # Only set: user, file info, status (simplified Receipt model!)
                 try:
+
+                    # ✅ STEP 1: Save file using receipt_storage BEFORE creating Receipt
+                    # Generate a unique path (same as Django's FileField upload_to)
+                    storage_path = receipt_storage.save(
+                        f"{user.id}/{timezone.now().year}/{timezone.now().month:02d}/{timezone.now().day:02d}/{uuid4()}{Path(uploaded_file.name).suffix}",
+                        uploaded_file
+                    )
+
+                    # ✅ STEP 2: Create Receipt with the path from receipt_storage
                     receipt = model_service.receipt_model.objects.create(
                         user=user,
                         original_filename=file_info['filename'],
-                        file_path=uploaded_file,  # FileField handles storage automatically
+                        file_path=storage_path,  # ✅ Use path from receipt_storage
                         file_size=file_info['size'],
                         mime_type=file_info['mime_type'],
                         file_hash=file_info['file_hash'],
-                        status='uploaded',  # Simple status only
+                        status='uploaded',
                         upload_ip_address=additional_metadata.get('ip_address'),
                     )
                 except Exception as e:
@@ -118,9 +129,6 @@ class FileService:
                             'error': str(e)
                         }
                     )
-                
-                # Get the storage path from FileField
-                storage_path = receipt.file_path.name
                 
                 logger.info(
                     f"Receipt file stored: {receipt.id} for user {user.id} at {storage_path}"
@@ -162,25 +170,25 @@ class FileService:
         """
         try:
             # Validate receipt has file
-            if not hasattr(receipt, 'file_path') or not receipt.file_path:
+            if not receipt.file_path:
                 raise FileRetrievalException(
                     detail="Receipt file not found",
                     context={'receipt_id': str(receipt.id)}
                 )
             
-            # Check file exists in storage
-            if not receipt.file_path.storage.exists(receipt.file_path.name):
+            # Check file exists in storage (use receipt_storage wrapper)
+            if not receipt_storage.exists(receipt.file_path):
                 raise FileRetrievalException(
                     detail="File does not exist in storage",
                     context={
                         'receipt_id': str(receipt.id),
-                        'storage_path': receipt.file_path.name
+                        'storage_path': receipt.file_path
                     }
                 )
             
-            # Generate signed URL
+            # Generate signed URL (pass string path directly)
             url = receipt_storage.generate_signed_url(
-                receipt.file_path.name, 
+                receipt.file_path,  # ✅ Just the string path
                 expires_in=expires_in
             )
             
@@ -219,12 +227,12 @@ class FileService:
                 )
             
             # Check file exists
-            if not receipt.file_path.storage.exists(receipt.file_path.name):
+            if not receipt.file_path.storage.exists(receipt.file_path):
                 raise FileRetrievalException(
                     detail="File does not exist in storage",
                     context={
                         'receipt_id': str(receipt.id),
-                        'storage_path': receipt.file_path.name
+                        'storage_path': receipt.file_path
                     }
                 )
             
@@ -265,7 +273,7 @@ class FileService:
                 logger.warning(f"Receipt {receipt.id} has no file to delete")
                 return True
             
-            storage_path = receipt.file_path.name
+            storage_path = receipt.file_path
             
             # Delete using FileField's delete method
             receipt.file_path.delete(save=False)
@@ -286,7 +294,7 @@ class FileService:
             if not hasattr(receipt, 'file_path') or not receipt.file_path:
                 return False
             
-            exists = receipt.file_path.storage.exists(receipt.file_path.name)
+            exists = receipt.file_path.storage.exists(receipt.file_path)
             
             if not exists:
                 logger.warning(f"File missing for receipt {receipt.id}")
@@ -309,7 +317,7 @@ class FileService:
             
             return {
                 'exists': self.file_exists(receipt),
-                'storage_path': receipt.file_path.name,
+                'storage_path': receipt.file_path,
                 'size': receipt.file_size,
                 'mime_type': receipt.mime_type,
                 'original_filename': receipt.original_filename

@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, date
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 from django.utils import timezone
 from django.core.cache import cache
@@ -26,11 +26,9 @@ class QuotaService:
     def check_upload_quota(self, user) -> Dict[str, Any]:
         """
         Check user's current upload quota status
-        
-        Returns:
-            Dict with quota information and remaining uploads
+        Counts ONLY processed/confirmed receipts
         """
-        cache_key = f"quota_status_{user.id}_{timezone.now().strftime('%Y_%m')}"
+        cache_key = f"quota_status_{user.id}_{timezone.now().strftime('%Y_%m')}_v2"
         
         try:
             # Try cache first
@@ -40,11 +38,12 @@ class QuotaService:
             
             current_month = timezone.now().date().replace(day=1)
             
-            # Count receipts this month
+            # Count ONLY successful receipts (processed/confirmed)
             try:
                 monthly_count = model_service.receipt_model.objects.filter(
                     user=user,
-                    created_at__date__gte=current_month
+                    created_at__date__gte=current_month,
+                    status__in=['processed', 'confirmed']  # ✅ Only count successful ones
                 ).count()
             except Exception as e:
                 logger.error(f"Failed to count receipts for user {user.id}: {str(e)}")
@@ -75,7 +74,6 @@ class QuotaService:
                 logger.warning(f"Failed to cache quota status: {str(e)}")
             
             logger.info(f"Quota check for user {user.id}: {monthly_count}/{self.MONTHLY_RECEIPT_LIMIT}")
-            
             return quota_status
             
         except QuotaCalculationException:

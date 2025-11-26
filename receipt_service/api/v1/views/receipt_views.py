@@ -396,7 +396,6 @@ class ReceiptListView(generics.ListAPIView):
         """List receipts with filters"""
         try:
             # Parse and validate filters
-            status_filter = self._validate_status_filter(request.GET.get('status'))
             ordering = self._validate_ordering(request.GET.get('ordering', '-created_at'))
             
             # Get queryset
@@ -414,7 +413,7 @@ class ReceiptListView(generics.ListAPIView):
                 # Add custom metadata to response
                 response_data = paginated_response.data
                 response_data['filters'] = {
-                    'status': status_filter,
+                    'status': request.GET.get('status'),
                     'ordering': ordering
                 }
                 response_data['available_actions'] = {
@@ -437,7 +436,7 @@ class ReceiptListView(generics.ListAPIView):
             )
     
     def get_queryset(self):
-        """Get filtered and ordered queryset"""
+        """Get filtered and ordered queryset - defaults to completed receipts"""
         from ....services.receipt_model_service import model_service
         
         queryset = model_service.receipt_model.objects.filter(
@@ -446,8 +445,17 @@ class ReceiptListView(generics.ListAPIView):
         
         # Apply status filter
         status_filter = self.request.GET.get('status')
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
+        
+        # If no filter provided, show only useful statuses
+        if not status_filter:
+            queryset = queryset.filter(
+                status__in=['confirmed', 'processed']
+            )
+        else:
+            # User explicitly requested a filter
+            status_filter = self._validate_status_filter(status_filter)
+            if status_filter:
+                queryset = queryset.filter(status=status_filter)
         
         # Apply ordering
         ordering = self._validate_ordering(

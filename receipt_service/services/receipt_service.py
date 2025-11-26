@@ -893,6 +893,7 @@ from ..utils.exceptions import (
     LedgerEntryCreationException
 )
 from shared.utils.exceptions import ValidationException
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -967,6 +968,9 @@ class ReceiptService:
             except Exception as e:
                 logger.error(f"Failed to queue AI processing: {str(e)}", exc_info=True)
             
+            cache_key = f"quota_status_{user.id}_{timezone.now().strftime('%Y_%m')}_v2"
+            cache.delete(cache_key)
+
             return {
                 'receipt_id': str(receipt_id),
                 'status': status,
@@ -993,7 +997,7 @@ class ReceiptService:
             
             # Get receipt to get storage path
             receipt = model_service.receipt_model.objects.get(id=receipt_id)
-            storage_path = receipt.file_path.name
+            storage_path = receipt.file_path
             
             if not storage_path:
                 raise ValueError(f"Receipt {receipt_id} has no storage path")

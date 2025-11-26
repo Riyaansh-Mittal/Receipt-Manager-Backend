@@ -35,15 +35,26 @@ class ReceiptFileStorage:
             except ImportError:
                 logger.warning("S3 storage not available, falling back to local storage")
                 self.use_s3 = False
+                self.storage = self._get_local_storage()
         
-        if not self.use_s3:
-            # Local filesystem storage
-            # Store directly in MEDIA_ROOT (no receipts/ subdirectory added)
-            self.storage = FileSystemStorage(
-                location=settings.MEDIA_ROOT,  # Use MEDIA_ROOT directly
-                base_url=settings.MEDIA_URL
-            )
-            logger.info(f"Using local storage for receipts at: {settings.MEDIA_ROOT}")
+        else:
+            # Local filesystem storage for dev
+            self.storage = self._get_local_storage()
+    
+    def _get_local_storage(self) -> FileSystemStorage:
+        """Get local filesystem storage"""
+        media_root = settings.MEDIA_ROOT
+        media_url = settings.MEDIA_URL
+        
+        # Ensure MEDIA_ROOT exists
+        os.makedirs(media_root, exist_ok=True)
+        
+        logger.info(f"Using local storage for receipts at: {media_root}")
+        
+        return FileSystemStorage(
+            location=media_root,
+            base_url=media_url
+        )
     
     def save(self, name: str, content, max_length: Optional[int] = None) -> str:
         """
