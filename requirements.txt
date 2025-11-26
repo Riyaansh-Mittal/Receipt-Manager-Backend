@@ -14,7 +14,6 @@ django-redis
 django-ratelimit
 dj-database-url
 pycryptodome
-psycopg2
 psycopg2-binary
 python-json-logger
 google-generativeai
